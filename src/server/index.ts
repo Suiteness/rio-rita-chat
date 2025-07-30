@@ -413,6 +413,19 @@ export class Chat implements DurableObject {
   // Webhook endpoint to receive messages from GigaML
   async handleGigaMLWebhook(request: Request): Promise<Response> {
     try {
+      // Validate authentication
+      const authHeader = request.headers.get("Authorization");
+      const expectedApiKey = this.env?.GIGAML_API_KEY;
+      
+      if (!authHeader || !expectedApiKey) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      
+      const token = authHeader.replace("Bearer ", "");
+      if (token !== expectedApiKey) {
+        return new Response("Unauthorized", { status: 401 });
+      }
+      
       const body = await request.json() as any;
       
       if (!body.sessionId || !body.message) {
