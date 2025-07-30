@@ -181,7 +181,7 @@ function App() {
   };
 
   return (
-    <div className="flex flex-col h-full w-full relative">
+    <div className="flex flex-col h-full w-full relative min-h-screen md:min-h-0">
       {/* Background image for medium and larger screens */}
       <div
         className="hidden md:block fixed inset-0 bg-cover bg-center bg-no-repeat"
@@ -192,9 +192,9 @@ function App() {
       />
 
       {/* Chat container with backdrop blur for medium+ screens */}
-      <div className="flex flex-col h-full max-w-6xl md:mx-auto md:px-8 lg:px-16 relative z-10 md:bg-white/80 md:dark:bg-gray-900/80 md:backdrop-blur-md md:shadow-xl bg-white dark:bg-gray-800 shadow-lg md:mt-8 md:mb-8 md:rounded-lg md:overflow-hidden">
+      <div className="flex flex-col h-full max-w-6xl md:mx-auto md:px-8 lg:px-16 relative z-10 md:bg-white/80 md:dark:bg-gray-900/80 md:backdrop-blur-md md:shadow-xl bg-white dark:bg-gray-800 shadow-lg md:mt-8 md:mb-8 md:rounded-lg md:overflow-hidden pt-safe-top pb-safe-bottom md:pt-0 md:pb-0">
         {/* Header */}
-        <div className="border-b border-gray-200 dark:border-gray-700 p-4 bg-white/90 md:bg-transparent md:dark:bg-transparent dark:bg-gray-800">
+        <div className="border-b border-gray-200 dark:border-gray-700 p-4 bg-white/90 md:bg-transparent md:dark:bg-transparent dark:bg-gray-800 flex-shrink-0">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
@@ -271,7 +271,7 @@ function App() {
         </div>
 
         {/* Input Form */}
-        <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-white/90 md:bg-transparent md:dark:bg-transparent dark:bg-gray-800">
+        <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-white/90 md:bg-transparent md:dark:bg-transparent dark:bg-gray-800 flex-shrink-0">
           <form onSubmit={handleSubmit} className="flex items-center space-x-3">
             <div className="flex-1">
               <input

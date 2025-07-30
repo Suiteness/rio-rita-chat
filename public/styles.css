@@ -29,6 +29,18 @@ html {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  height: 100dvh; /* Use dynamic viewport height on mobile */
+}
+
+/* Safe area support for mobile devices */
+@supports (padding-top: env(safe-area-inset-top)) {
+  .pt-safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  
+  .pb-safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
 }
 
 /* Custom scrollbar for overflow areas */
