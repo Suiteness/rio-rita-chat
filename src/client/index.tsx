@@ -32,9 +32,11 @@ function Avatar({ user, role }: { user: string; role: "user" | "assistant" }) {
 function ChatBubble({
   message,
   isOwn,
+  isLastUserMessage,
 }: {
   message: ChatMessage;
   isOwn: boolean;
+  isLastUserMessage?: boolean;
 }) {
   const isAI = message.role === "assistant";
   const timestamp = new Date().toLocaleTimeString([], {
@@ -47,13 +49,15 @@ function ChatBubble({
     return (
       <div className="flex items-start gap-2.5 justify-end">
         <div
-          className="flex flex-col w-full max-w-[320px] leading-1.5 p-4 border-gray-200 bg-blue-500 rounded-s-xl rounded-ee-xl"
+          className="flex flex-col w-full max-w-[320px] leading-1.5 p-4 border-gray-200 bg-blue-500 rounded-s-xl rounded-ee-xl md:bg-blue-500/95 md:backdrop-blur-sm"
           title={timestamp}
         >
           <p className="text-sm font-normal text-white">{message.content}</p>
-          <span className="text-xs font-normal text-blue-100 mt-1">
-            Delivered
-          </span>
+          {isLastUserMessage && (
+            <span className="text-xs font-normal text-blue-100 mt-1">
+              Delivered
+            </span>
+          )}
         </div>
         <Avatar user={message.user} role={message.role} />
       </div>
@@ -65,13 +69,13 @@ function ChatBubble({
     <div className="flex items-start gap-2.5">
       <Avatar user={message.user} role={message.role} />
       <div
-        className="flex flex-col w-full max-w-[320px] leading-1.5 p-4 border-gray-200 bg-gray-100 rounded-e-xl rounded-es-xl dark:bg-gray-700"
+        className="flex flex-col w-full max-w-[320px] leading-1.5 p-4 border-gray-200 bg-gray-100 rounded-e-xl rounded-es-xl dark:bg-gray-700 md:bg-white/95 md:backdrop-blur-sm md:dark:bg-gray-800/95"
         title={timestamp}
       >
         {isAI && (
           <div className="flex items-center space-x-2 rtl:space-x-reverse mb-2">
             <span className="text-xs font-semibold text-purple-600 dark:text-purple-300">
-              Rio Rita AI
+              Rio Rita
             </span>
             <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
               {timestamp}
@@ -81,9 +85,6 @@ function ChatBubble({
         <p className="text-sm font-normal py-2.5 text-gray-900 dark:text-white">
           {message.content}
         </p>
-        <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
-          {isAI ? "AI Response" : "Delivered"}
-        </span>
       </div>
     </div>
   );
@@ -180,83 +181,117 @@ function App() {
   };
 
   return (
-    <div className="flex flex-col h-full max-w-4xl mx-auto bg-white dark:bg-gray-800 shadow-lg">
-      {/* Header */}
-      <div className="border-b border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
-              Chat with Rio Rita
-            </h1>
-          </div>
-          <div className="flex items-center space-x-2">
-            <div className="w-2 h-2 bg-green-400 rounded-full"></div>
-            <span className="text-sm text-gray-500 dark:text-gray-400">
-              Online
-            </span>
-          </div>
-        </div>
-      </div>
+    <div className="flex flex-col h-full w-full relative">
+      {/* Background image for medium and larger screens */}
+      <div
+        className="hidden md:block fixed inset-0 bg-cover bg-center bg-no-repeat"
+        style={{
+          backgroundImage:
+            "url('https://i.travelapi.com/lodging/1000000/20000/19900/19837/b756c453_z.jpg')",
+        }}
+      />
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
-        {messages.length === 0 ? (
-          <div
-            className="flex items-center justify-center h-full"
-            style={{ height: "calc(100% - 2rem)" }}
-          >
-            <div className="text-center">
-              <div className="w-24 h-24 flex items-center justify-center mx-auto mb-4">
-                <span className="text-2xl">
-                  <img
-                    src="https://imagedelivery.net/j444tmn-dIClF7t-Q3FQdw/1f51e6f0-1ab5-4345-b06d-851eeb360700/360x240"
-                    alt=""
-                  />
-                </span>
-              </div>
-              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
-                Start the conversation
-              </h3>
-              <p className="text-gray-500 dark:text-gray-400">
-                Send a message to Rio Rita.
-              </p>
+      {/* Chat container with backdrop blur for medium+ screens */}
+      <div className="flex flex-col h-full max-w-6xl md:mx-auto md:px-8 lg:px-16 relative z-10 md:bg-white/80 md:dark:bg-gray-900/80 md:backdrop-blur-md md:shadow-xl bg-white dark:bg-gray-800 shadow-lg md:mt-8 md:mb-8 md:rounded-lg md:overflow-hidden">
+        {/* Header */}
+        <div className="border-b border-gray-200 dark:border-gray-700 p-4 bg-white/90 md:bg-transparent md:dark:bg-transparent dark:bg-gray-800">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
+                Chat with Rio Rita
+              </h1>
+            </div>
+            <div className="flex items-center space-x-2">
+              <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+              <span className="text-sm text-gray-500 dark:text-gray-400">
+                Online
+              </span>
             </div>
           </div>
-        ) : (
-          <div className="space-y-4">
-            {messages.map((message) => (
-              <ChatBubble
-                key={message.id}
-                message={message}
-                isOwn={message.user === displayName}
-              />
-            ))}
-          </div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
+        </div>
 
-      {/* Input Form */}
-      <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
-        <form onSubmit={handleSubmit} className="flex items-center space-x-3">
-          <div className="flex-1">
-            <input
-              type="text"
-              value={inputValue}
-              onChange={(e) => setInputValue(e.target.value)}
-              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
-              placeholder="Type your message..."
-              autoComplete="off"
-            />
-          </div>
-          <button
-            type="submit"
-            disabled={!inputValue.trim()}
-            className="px-6 py-3 bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            Send
-          </button>
-        </form>
+        {/* Messages */}
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 md:bg-transparent">
+          {messages.length === 0 ? (
+            <div
+              className="flex items-center justify-center h-full"
+              style={{ height: "calc(100% - 2rem)" }}
+            >
+              <div className="text-center">
+                <div className="w-24 h-24 flex items-center justify-center mx-auto mb-4">
+                  <span className="text-2xl">
+                    <img
+                      src="https://imagedelivery.net/j444tmn-dIClF7t-Q3FQdw/1f51e6f0-1ab5-4345-b06d-851eeb360700/360x240"
+                      alt="Rio Rita Chat Icon"
+                    />
+                  </span>
+                </div>
+                <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2 md:text-gray-800 md:dark:text-gray-200">
+                  Start the conversation
+                </h3>
+                <p className="text-gray-500 dark:text-gray-400 md:text-gray-600 md:dark:text-gray-300">
+                  Send a message to Rio Rita.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {messages.map((message, index) => {
+                // Check if this is the last user message
+                const isLastUserMessage =
+                  message.role === "user" &&
+                  index ===
+                    messages
+                      .map((m) => (m.role === "user" ? m : null))
+                      .filter(Boolean).length -
+                      1 +
+                      messages
+                        .slice(0, index + 1)
+                        .filter((m) => m.role === "user").length -
+                      1;
+
+                // Simpler approach: find the last user message index
+                const lastUserMessageIndex = messages
+                  .map((m, i) => (m.role === "user" ? i : -1))
+                  .filter((i) => i !== -1)
+                  .pop();
+
+                return (
+                  <ChatBubble
+                    key={message.id}
+                    message={message}
+                    isOwn={message.user === displayName}
+                    isLastUserMessage={index === lastUserMessageIndex}
+                  />
+                );
+              })}
+            </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {/* Input Form */}
+        <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-white/90 md:bg-transparent md:dark:bg-transparent dark:bg-gray-800">
+          <form onSubmit={handleSubmit} className="flex items-center space-x-3">
+            <div className="flex-1">
+              <input
+                type="text"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400 md:bg-white/90 md:backdrop-blur-sm md:dark:bg-gray-800/90"
+                placeholder="Type your message..."
+                autoComplete="off"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={!inputValue.trim()}
+              className="px-6 py-3 bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Send
+            </button>
+          </form>
+        </div>
       </div>
     </div>
   );
