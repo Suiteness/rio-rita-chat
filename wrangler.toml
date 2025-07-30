@@ -1,0 +1,27 @@
+name = "rio-rita-chat"
+main = "src/server/index.ts"
+compatibility_date = "2025-04-01"
+upload_source_maps = true
+
+[build]
+command = "npx postcss public/styles.css -o public/dist/styles.css && npx esbuild src/client/index.tsx --bundle --splitting --format=esm --platform=browser --outdir=public/dist"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+
+[[durable_objects.bindings]]
+name = "Chat"
+class_name = "Chat"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Chat"]
+
+[observability]
+enabled = true
+
+[dev]
+port = 8787
+local_protocol = "http"

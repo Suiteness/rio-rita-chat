@@ -1,6 +1,6 @@
 import { createRoot } from "react-dom/client";
 import { usePartySocket } from "partysocket/react";
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {
   BrowserRouter,
   Routes,
@@ -10,12 +10,93 @@ import {
 } from "react-router";
 import { nanoid } from "nanoid";
 
-import { names, type ChatMessage, type Message } from "../shared";
+import { type ChatMessage, type Message } from "../shared";
+
+// Avatar component for users
+function Avatar({ user, role }: { user: string; role: "user" | "assistant" }) {
+  const isAI = role === "assistant";
+  const displayText = isAI ? "🤖" : "Me";
+
+  return (
+    <div
+      className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium ${
+        isAI ? "bg-blue-500 text-white" : "bg-gray-300 text-gray-700"
+      }`}
+    >
+      {displayText}
+    </div>
+  );
+}
+
+// Individual chat message component
+function ChatBubble({
+  message,
+  isOwn,
+}: {
+  message: ChatMessage;
+  isOwn: boolean;
+}) {
+  const isAI = message.role === "assistant";
+  const timestamp = new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  if (isOwn && !isAI) {
+    // Own message - right aligned with blue background
+    return (
+      <div className="flex items-start gap-2.5 justify-end">
+        <div
+          className="flex flex-col w-full max-w-[320px] leading-1.5 p-4 border-gray-200 bg-blue-500 rounded-s-xl rounded-ee-xl"
+          title={timestamp}
+        >
+          <p className="text-sm font-normal text-white">{message.content}</p>
+          <span className="text-xs font-normal text-blue-100 mt-1">
+            Delivered
+          </span>
+        </div>
+        <Avatar user={message.user} role={message.role} />
+      </div>
+    );
+  }
+
+  // AI or other messages - left aligned with gray background
+  return (
+    <div className="flex items-start gap-2.5">
+      <Avatar user={message.user} role={message.role} />
+      <div
+        className="flex flex-col w-full max-w-[320px] leading-1.5 p-4 border-gray-200 bg-gray-100 rounded-e-xl rounded-es-xl dark:bg-gray-700"
+        title={timestamp}
+      >
+        {isAI && (
+          <div className="flex items-center space-x-2 rtl:space-x-reverse mb-2">
+            <span className="text-xs font-semibold text-purple-600 dark:text-purple-300">
+              Rio Rita AI
+            </span>
+            <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
+              {timestamp}
+            </span>
+          </div>
+        )}
+        <p className="text-sm font-normal py-2.5 text-gray-900 dark:text-white">
+          {message.content}
+        </p>
+        <span className="text-xs font-normal text-gray-500 dark:text-gray-400">
+          {isAI ? "AI Response" : "Delivered"}
+        </span>
+      </div>
+    </div>
+  );
+}
 
 function App() {
-  const [name] = useState(names[Math.floor(Math.random() * names.length)]);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [inputValue, setInputValue] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const { room } = useParams();
+
+  // Simple name for the user since it's just them and Rio Rita
+  const [displayName] = useState("Me");
 
   const socket = usePartySocket({
     party: "chat",
@@ -61,8 +142,8 @@ function App() {
                   user: message.user,
                   role: message.role,
                 }
-              : m,
-          ),
+              : m
+          )
         );
       } else {
         setMessages(message.messages);
@@ -70,51 +151,113 @@ function App() {
     },
   });
 
+  // Auto-scroll to bottom when new messages arrive
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inputValue.trim()) return;
+
+    const chatMessage: ChatMessage = {
+      id: nanoid(8),
+      content: inputValue.trim(),
+      user: displayName,
+      role: "user",
+    };
+
+    setMessages((messages) => [...messages, chatMessage]);
+
+    socket.send(
+      JSON.stringify({
+        type: "add",
+        ...chatMessage,
+      } satisfies Message)
+    );
+
+    setInputValue("");
+  };
+
   return (
-    <div className="chat container">
-      {messages.map((message) => (
-        <div key={message.id} className="row message">
-          <div className="two columns user">{message.user}</div>
-          <div className="ten columns">{message.content}</div>
+    <div className="flex flex-col h-full max-w-4xl mx-auto bg-white dark:bg-gray-800 shadow-lg">
+      {/* Header */}
+      <div className="border-b border-gray-200 dark:border-gray-700 p-4 bg-white dark:bg-gray-800">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold text-gray-900 dark:text-white">
+              Chat with Rio Rita
+            </h1>
+          </div>
+          <div className="flex items-center space-x-2">
+            <div className="w-2 h-2 bg-green-400 rounded-full"></div>
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              Online
+            </span>
+          </div>
         </div>
-      ))}
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const content = e.currentTarget.elements.namedItem(
-            "content",
-          ) as HTMLInputElement;
-          const chatMessage: ChatMessage = {
-            id: nanoid(8),
-            content: content.value,
-            user: name,
-            role: "user",
-          };
-          setMessages((messages) => [...messages, chatMessage]);
-          // we could broadcast the message here
+      </div>
 
-          socket.send(
-            JSON.stringify({
-              type: "add",
-              ...chatMessage,
-            } satisfies Message),
-          );
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+        {messages.length === 0 ? (
+          <div
+            className="flex items-center justify-center h-full"
+            style={{ height: "calc(100% - 2rem)" }}
+          >
+            <div className="text-center">
+              <div className="w-24 h-24 flex items-center justify-center mx-auto mb-4">
+                <span className="text-2xl">
+                  <img
+                    src="https://imagedelivery.net/j444tmn-dIClF7t-Q3FQdw/1f51e6f0-1ab5-4345-b06d-851eeb360700/360x240"
+                    alt=""
+                  />
+                </span>
+              </div>
+              <h3 className="text-lg font-medium text-gray-900 dark:text-white mb-2">
+                Start the conversation
+              </h3>
+              <p className="text-gray-500 dark:text-gray-400">
+                Send a message to Rio Rita.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {messages.map((message) => (
+              <ChatBubble
+                key={message.id}
+                message={message}
+                isOwn={message.user === displayName}
+              />
+            ))}
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
 
-          content.value = "";
-        }}
-      >
-        <input
-          type="text"
-          name="content"
-          className="ten columns my-input-text"
-          placeholder={`Hello ${name}! Type a message...`}
-          autoComplete="off"
-        />
-        <button type="submit" className="send-message two columns">
-          Send
-        </button>
-      </form>
+      {/* Input Form */}
+      <div className="p-4 border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800">
+        <form onSubmit={handleSubmit} className="flex items-center space-x-3">
+          <div className="flex-1">
+            <input
+              type="text"
+              value={inputValue}
+              onChange={(e) => setInputValue(e.target.value)}
+              className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:border-gray-600 dark:text-white dark:placeholder-gray-400"
+              placeholder="Type your message..."
+              autoComplete="off"
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={!inputValue.trim()}
+            className="px-6 py-3 bg-blue-500 text-white font-medium rounded-lg hover:bg-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            Send
+          </button>
+        </form>
+      </div>
     </div>
   );
 }
@@ -127,5 +270,5 @@ createRoot(document.getElementById("root")!).render(
       <Route path="/:room" element={<App />} />
       <Route path="*" element={<Navigate to="/" />} />
     </Routes>
-  </BrowserRouter>,
+  </BrowserRouter>
 );

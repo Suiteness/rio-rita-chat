@@ -25,31 +25,55 @@ export type Message =
       messages: ChatMessage[];
     };
 
-export const names = [
-  "Alice",
-  "Bob",
-  "Charlie",
-  "David",
-  "Eve",
-  "Frank",
-  "Grace",
-  "Heidi",
-  "Ivan",
-  "Judy",
-  "Kevin",
-  "Linda",
-  "Mallory",
-  "Nancy",
-  "Oscar",
-  "Peggy",
-  "Quentin",
-  "Randy",
-  "Steve",
-  "Trent",
-  "Ursula",
-  "Victor",
-  "Walter",
-  "Xavier",
-  "Yvonne",
-  "Zoe",
-];
+// GigaML API Types
+export type GigaMLSession = {
+  sessionId: string;
+  userId: string;
+  status: "active" | "closed";
+  createdAt: string;
+};
+
+export type GigaMLInitiateSessionRequest = {
+  agent_id?: string;
+  agent_template_id?: string;
+  userId: string;
+  ticket_id: string;
+  metadata?: Record<string, any>;
+};
+
+export type GigaMLInitiateSessionResponse = {
+  sessionId?: string;
+  status?: string;
+  message?: string;
+};
+
+export type GigaMLReceiveMessageRequest = {
+  sessionId: string;
+  ticket_id: string;
+  message_id: string;
+  message: {
+    type: "text" | "image" | "file";
+    content: string;
+    role: "user" | "assistant";
+    metadata?: Record<string, any>;
+  };
+};
+
+export type GigaMLReceiveMessageResponse = {
+  status: string;
+  messageId: string;
+};
+
+export type GigaMLSendMessageRequest = {
+  sessionId: string;
+  message: {
+    type: "text" | "image" | "file";
+    content: string;
+    metadata?: Record<string, any>;
+  };
+};
+
+export type GigaMLCloseSessionRequest = {
+  sessionId: string;
+  reason?: string;
+};

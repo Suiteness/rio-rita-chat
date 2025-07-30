@@ -5,6 +5,9 @@ declare namespace Cloudflare {
 	interface Env {
 		Chat: DurableObjectNamespace<import("./index").Chat>;
 		ASSETS: Fetcher;
+		GIGAML_API_KEY?: string;
+		GIGAML_AGENT_ID?: string;
+		GIGAML_WEBHOOK_URL?: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

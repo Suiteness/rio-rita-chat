@@ -25,7 +25,11 @@
   "devDependencies": {
     "@types/react": "^18.0.0",
     "@types/react-dom": "^18.0.0",
+    "autoprefixer": "^10.4.21",
     "esbuild": "0.25.2",
+    "postcss": "^8.5.6",
+    "postcss-cli": "^11.0.1",
+    "tailwindcss": "^3.4.17",
     "typescript": "5.8.3",
     "wrangler": "4.21.x"
   },
@@ -33,6 +37,8 @@
     "cf-typegen": "wrangler types ./src/server/worker-configuration.d.ts",
     "check": "tsc --project src/client && tsc --project src/server && wrangler deploy --dry-run",
     "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev --port 8787 --live-reload",
+    "dev:css": "npx postcss public/styles.css -o public/dist/styles.css --watch",
+    "build:css": "npx postcss public/styles.css -o public/dist/styles.css"
   }
 }
