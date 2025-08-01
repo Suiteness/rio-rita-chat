@@ -259,12 +259,24 @@ export class Chat implements DurableObject {
       }
       
       // Attach session to this connection
+      // First, clean up any stale mappings for this session
+      for (const [oldConnectionId, existingSession] of this.gigamlSessions.entries()) {
+        if (existingSession.ticketId === session.ticketId && oldConnectionId !== connectionId) {
+          console.log(`🧹 Cleaning up stale connection mapping: ${oldConnectionId} -> ${existingSession.ticketId}`);
+          this.gigamlSessions.delete(oldConnectionId);
+        }
+      }
+      
+      // Now attach the session to the new connection
       this.gigamlSessions.set(connectionId, session);
       const connectionData = this.connections.get(ws);
       if (connectionData) {
         connectionData.gigamlSession = session;
         console.log(`🔗 GigaML session attached to connection: ${connectionId} -> ${session.ticketId}`);
       }
+      
+      console.log(`📊 Active sessions in memory: ${this.gigamlSessions.size}`);
+      console.log(`📊 Active connections: ${this.connections.size}`);
     } catch (error) {
       console.error("Failed to setup GigaML session (continuing without AI):", error);
       // Continue without GigaML session for development
@@ -333,18 +345,21 @@ export class Chat implements DurableObject {
       console.log(`🔌❌ Keeping GigaML session active for reconnection: ${session.ticketId}`);
       console.log(`🔌❌ Session will timeout automatically on GigaML's side after inactivity`);
       
-      // Keep the session in memory for faster reconnection
-      // DO NOT remove from gigamlSessions Map - preserve for reconnection
-      console.log(`🔌❌ Session ${session.ticketId} will remain in memory for reconnection`);
+      // Remove the connection mapping but keep the session in database for reuse
+      if (connectionData.id) {
+        this.gigamlSessions.delete(connectionData.id);
+        console.log(`🧹 Removed connection mapping: ${connectionData.id} -> ${session.ticketId}`);
+      }
       
       // DO NOT call unregisterSessionFromRouter - keep session registered for webhooks
       console.log(`🔌❌ Session registry preserved for webhook routing`);
     }
     
-    // Only remove the WebSocket connection, but preserve session state everywhere
+    // Remove the WebSocket connection
     this.connections.delete(ws);
     console.log(`🔌❌ Connections after close: ${this.connections.size}`);
     console.log(`🔌❌ Sessions still in memory: ${this.gigamlSessions.size}`);
+    console.log(`🔌❌ Session preserved for reconnection in both memory and database`);
     console.log(`🔌❌ Session preserved for reconnection in both memory and database`);
   }
 
@@ -426,8 +441,11 @@ export class Chat implements DurableObject {
         // Extract original room ID from request headers if available
         const originalRoomId = request.headers.get("x-original-room-id");
         
-        // Set up the connection and initiate GigaML session
-        await this.handleWebSocketConnect(server, originalRoomId || undefined);
+        // Set up the connection and initiate GigaML session asynchronously
+        // Don't await this to avoid blocking the WebSocket upgrade response
+        this.handleWebSocketConnect(server, originalRoomId || undefined).catch(error => {
+          console.error("Failed to setup WebSocket connection:", error);
+        });
         
         return new Response(null, {
           status: 101,
@@ -549,12 +567,22 @@ export class Chat implements DurableObject {
       };
       
       this.saveMessage(assistantMessage);
-      this.broadcastMessage({
-        type: "add",
-        ...assistantMessage,
-      });
       
-      console.log(`GigaML response processed for session ${ticketId}`);
+      // Check if there are active connections to broadcast to
+      const activeConnections = this.connections.size;
+      console.log(`📊 Active connections: ${activeConnections}`);
+      
+      if (activeConnections > 0) {
+        this.broadcastMessage({
+          type: "add",
+          ...assistantMessage,
+        });
+        console.log(`📤 Broadcasted GigaML response to ${activeConnections} connection(s)`);
+      } else {
+        console.log(`💾 No active connections - message saved to database for next connection`);
+      }
+      
+      console.log(`🎉 GigaML response processed for session ${ticketId}`);
       return new Response("OK", { status: 200 });
     } catch (error) {
       console.error("Error handling GigaML webhook:", error);
@@ -568,10 +596,9 @@ export class Chat implements DurableObject {
     try {
       const body = await request.json() as { ticketId: string; roomId: string };
       
-      // Ensure the table exists with correct schema
-      this.state.storage.sql.exec(`DROP TABLE IF EXISTS session_registry`);
+      // Ensure the table exists (don't drop it!)
       this.state.storage.sql.exec(
-        `CREATE TABLE session_registry (ticket_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
+        `CREATE TABLE IF NOT EXISTS session_registry (ticket_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
       );
       
       this.state.storage.sql.exec(
@@ -626,11 +653,10 @@ export class Chat implements DurableObject {
       
       console.log("=== Webhook Router: Looking up ticket ===", ticketId);
       
-      // Ensure the session registry table has the correct schema
-      console.log("=== Webhook Router: Creating/updating session registry table ===");
-      this.state.storage.sql.exec(`DROP TABLE IF EXISTS session_registry`);
+      // Ensure the session registry table exists (don't drop it!)
+      console.log("=== Webhook Router: Ensuring session registry table exists ===");
       this.state.storage.sql.exec(
-        `CREATE TABLE session_registry (ticket_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
+        `CREATE TABLE IF NOT EXISTS session_registry (ticket_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
       );
       
       const sessionRegistry = this.state.storage.sql
