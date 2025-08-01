@@ -483,10 +483,25 @@ export class Chat implements DurableObject {
         };
       }
       
+      // Extract text content from GigaML message format
+      let messageContent: string;
+      if (Array.isArray(body.message.content)) {
+        // GigaML sends content as an array of objects
+        messageContent = body.message.content
+          .filter((item: any) => item.type === "text")
+          .map((item: any) => item.text)
+          .join(" ");
+      } else if (typeof body.message.content === "string") {
+        // Fallback for simple string content
+        messageContent = body.message.content;
+      } else {
+        messageContent = "Assistant response received";
+      }
+
       // Create assistant message
       const assistantMessage: ChatMessage = {
         id: `gigaml_${Date.now()}`,
-        content: body.message.content,
+        content: messageContent,
         user: "Rio Assistant",
         role: "assistant",
       };
@@ -511,10 +526,6 @@ export class Chat implements DurableObject {
     try {
       const body = await request.json() as { sessionId: string; roomId: string };
       
-      if (this.state.id.name !== "webhook-router") {
-        return new Response("Invalid router", { status: 400 });
-      }
-      
       this.state.storage.sql.exec(
         `CREATE TABLE IF NOT EXISTS session_registry (session_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
       );
@@ -536,10 +547,6 @@ export class Chat implements DurableObject {
   async handleSessionUnregistration(request: Request): Promise<Response> {
     try {
       const body = await request.json() as { sessionId: string };
-      
-      if (this.state.id.name !== "webhook-router") {
-        return new Response("Invalid router", { status: 400 });
-      }
       
       this.state.storage.sql.exec(
         `DELETE FROM session_registry WHERE session_id = ?`,
@@ -568,16 +575,26 @@ export class Chat implements DurableObject {
       
       if (!sessionId) {
         console.log("=== Webhook Router: No sessionId found ===");
-        return new Response("Invalid webhook payload", { status: 400 });
-      }
-      
-      const routerName = this.state.id.name;
-      if (routerName !== "webhook-router") {
-        console.log("=== Webhook Router: Invalid router name ===", routerName);
-        return new Response("Invalid router", { status: 400 });
+        console.log("=== Webhook Router: Available body keys ===", Object.keys(body));
+        return new Response("Invalid webhook payload - no session identifier", { status: 400 });
       }
       
       console.log("=== Webhook Router: Looking up session ===", sessionId);
+      
+      // First, let's see what's in the registry table
+      console.log("=== Webhook Router: Checking registry table exists ===");
+      const tableExists = this.state.storage.sql
+        .exec(`SELECT name FROM sqlite_master WHERE type='table' AND name='session_registry'`)
+        .toArray();
+      console.log("=== Webhook Router: Registry table exists ===", tableExists.length > 0);
+      
+      if (tableExists.length > 0) {
+        const allSessions = this.state.storage.sql
+          .exec(`SELECT * FROM session_registry`)
+          .toArray();
+        console.log("=== Webhook Router: All sessions in registry ===", allSessions);
+      }
+      
       const sessionRegistry = this.state.storage.sql
         .exec(`SELECT room_id FROM session_registry WHERE session_id = ? LIMIT 1`, sessionId)
         .toArray();
@@ -586,40 +603,83 @@ export class Chat implements DurableObject {
       
       if (sessionRegistry.length === 0) {
         console.log(`=== Webhook Router: No session found in registry for ${sessionId} ===`);
-        return new Response("Session not found", { status: 404 });
+        console.log("=== Webhook Router: Trying ticket_id lookup instead ===");
+        
+        // Try looking up by ticket_id directly
+        const ticketRegistry = this.state.storage.sql
+          .exec(`SELECT room_id FROM session_registry WHERE session_id = ? LIMIT 1`, body.ticket_id)
+          .toArray();
+        console.log("=== Webhook Router: Ticket registry result ===", ticketRegistry);
+        
+        if (ticketRegistry.length === 0) {
+          return new Response("Session not found", { status: 404 });
+        }
+        
+        // Use the ticket result
+        const roomId = (ticketRegistry[0] as any).room_id;
+        console.log("=== Webhook Router: Found room ID via ticket_id ===", roomId);
+        
+        const chatId = this.env?.Chat?.idFromString?.(roomId);
+        if (!chatId) {
+          console.error(`=== Webhook Router: Failed to create chat ID from room ID: ${roomId} ===`);
+          return new Response("Invalid room", { status: 400 });
+        }
+        
+        const chatObject = this.env?.Chat?.get?.(chatId);
+        if (!chatObject) {
+          console.log("=== Webhook Router: Chat object not available ===");
+          return new Response("Room not available", { status: 500 });
+        }
+        
+        const targetRequest = new Request(`https://internal/webhook/gigaml`, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            // Forward authorization header from original request
+            ...(request.headers.get("Authorization") && {
+              "Authorization": request.headers.get("Authorization")!
+            })
+          },
+          body: JSON.stringify(body),
+        });
+        
+        console.log(`=== Webhook Router: Routing webhook for session ${sessionId} to room ${roomId} ===`);
+        const response = await chatObject.fetch(targetRequest);
+        console.log("=== Webhook Router: Final response status ===", response.status);
+        return response;
+      } else {
+        const roomId = (sessionRegistry[0] as any).room_id;
+        console.log("=== Webhook Router: Found room ID via sessionId ===", roomId);
+        
+        const chatId = this.env?.Chat?.idFromString?.(roomId);
+        if (!chatId) {
+          console.error(`=== Webhook Router: Failed to create chat ID from room ID: ${roomId} ===`);
+          return new Response("Invalid room", { status: 400 });
+        }
+        
+        const chatObject = this.env?.Chat?.get?.(chatId);
+        if (!chatObject) {
+          console.log("=== Webhook Router: Chat object not available ===");
+          return new Response("Room not available", { status: 500 });
+        }
+        
+        const targetRequest = new Request(`https://internal/webhook/gigaml`, {
+          method: "POST",
+          headers: { 
+            "Content-Type": "application/json",
+            // Forward authorization header from original request
+            ...(request.headers.get("Authorization") && {
+              "Authorization": request.headers.get("Authorization")!
+            })
+          },
+          body: JSON.stringify(body),
+        });
+        
+        console.log(`=== Webhook Router: Routing webhook for session ${sessionId} to room ${roomId} ===`);
+        const response = await chatObject.fetch(targetRequest);
+        console.log("=== Webhook Router: Final response status ===", response.status);
+        return response;
       }
-      
-      const roomId = (sessionRegistry[0] as any).room_id;
-      console.log("=== Webhook Router: Found room ID ===", roomId);
-      
-      const chatId = this.env?.Chat?.idFromString?.(roomId);
-      if (!chatId) {
-        console.error(`=== Webhook Router: Failed to create chat ID from room ID: ${roomId} ===`);
-        return new Response("Invalid room", { status: 400 });
-      }
-      
-      const chatObject = this.env?.Chat?.get?.(chatId);
-      if (!chatObject) {
-        console.log("=== Webhook Router: Chat object not available ===");
-        return new Response("Room not available", { status: 500 });
-      }
-      
-      const targetRequest = new Request(`https://internal/webhook/gigaml`, {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-          // Forward authorization header from original request
-          ...(request.headers.get("Authorization") && {
-            "Authorization": request.headers.get("Authorization")!
-          })
-        },
-        body: JSON.stringify(body),
-      });
-      
-      console.log(`=== Webhook Router: Routing webhook for session ${sessionId} to room ${roomId} ===`);
-      const response = await chatObject.fetch(targetRequest);
-      console.log("=== Webhook Router: Final response status ===", response.status);
-      return response;
     } catch (error) {
       console.error("Error in webhook router:", error);
       return new Response("Router error", { status: 500 });
