@@ -99,55 +99,83 @@ function App() {
   // Simple name for the user since it's just them and Rio Rita
   const [displayName] = useState("Me");
 
+  // Ensure messages is always an array
+  const safeMessages = Array.isArray(messages) ? messages : [];
+
   const socket = usePartySocket({
     party: "chat",
     room,
     onMessage: (evt) => {
-      const message = JSON.parse(evt.data as string) as Message;
-      if (message.type === "add") {
-        const foundIndex = messages.findIndex((m) => m.id === message.id);
-        if (foundIndex === -1) {
-          // probably someone else who added a message
-          setMessages((messages) => [
-            ...messages,
-            {
-              id: message.id,
-              content: message.content,
-              user: message.user,
-              role: message.role,
-            },
-          ]);
-        } else {
-          // this usually means we ourselves added a message
-          // and it was broadcasted back
-          // so let's replace the message with the new message
-          setMessages((messages) => {
-            return messages
-              .slice(0, foundIndex)
-              .concat({
-                id: message.id,
-                content: message.content,
-                user: message.user,
-                role: message.role,
-              })
-              .concat(messages.slice(foundIndex + 1));
-          });
-        }
-      } else if (message.type === "update") {
-        setMessages((messages) =>
-          messages.map((m) =>
-            m.id === message.id
-              ? {
+      try {
+        const message = JSON.parse(evt.data as string) as Message;
+        if (message.type === "add") {
+          const foundIndex = safeMessages.findIndex((m) => m.id === message.id);
+          if (foundIndex === -1) {
+            // probably someone else who added a message
+            setMessages((prevMessages) => {
+              const currentMessages = Array.isArray(prevMessages)
+                ? prevMessages
+                : [];
+              return [
+                ...currentMessages,
+                {
                   id: message.id,
                   content: message.content,
                   user: message.user,
                   role: message.role,
-                }
-              : m
-          )
-        );
-      } else {
-        setMessages(message.messages);
+                },
+              ];
+            });
+          } else {
+            // this usually means we ourselves added a message
+            // and it was broadcasted back
+            // so let's replace the message with the new message
+            setMessages((prevMessages) => {
+              const currentMessages = Array.isArray(prevMessages)
+                ? prevMessages
+                : [];
+              return currentMessages
+                .slice(0, foundIndex)
+                .concat({
+                  id: message.id,
+                  content: message.content,
+                  user: message.user,
+                  role: message.role,
+                })
+                .concat(currentMessages.slice(foundIndex + 1));
+            });
+          }
+        } else if (message.type === "update") {
+          setMessages((prevMessages) => {
+            const currentMessages = Array.isArray(prevMessages)
+              ? prevMessages
+              : [];
+            return currentMessages.map((m) =>
+              m.id === message.id
+                ? {
+                    id: message.id,
+                    content: message.content,
+                    user: message.user,
+                    role: message.role,
+                  }
+                : m
+            );
+          });
+        } else if (message.type === "connection") {
+          // Handle connection status messages
+          console.log("Connection status:", message);
+        } else if (message.type === "all") {
+          // Handle messages list
+          const messagesList = Array.isArray(message.messages)
+            ? message.messages
+            : [];
+          setMessages(messagesList);
+        } else {
+          // Unknown message type, ignore
+          console.log("Unknown message type:", message);
+        }
+      } catch (error) {
+        console.error("Error parsing WebSocket message:", error);
       }
     },
   });
@@ -155,7 +183,7 @@ function App() {
   // Auto-scroll to bottom when new messages arrive
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [safeMessages]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -168,7 +196,10 @@ function App() {
       role: "user",
     };
 
-    setMessages((messages) => [...messages, chatMessage]);
+    setMessages((prevMessages) => {
+      const currentMessages = Array.isArray(prevMessages) ? prevMessages : [];
+      return [...currentMessages, chatMessage];
+    });
 
     socket.send(
       JSON.stringify({
@@ -212,7 +243,7 @@ function App() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4 md:bg-transparent">
-          {messages.length === 0 ? (
+          {safeMessages.length === 0 ? (
             <div
               className="flex items-center justify-center h-full"
               style={{ height: "calc(100% - 2rem)" }}
@@ -236,22 +267,22 @@ function App() {
             </div>
           ) : (
             <div className="space-y-4">
-              {messages.map((message, index) => {
+              {safeMessages.map((message, index) => {
                 // Check if this is the last user message
                 const isLastUserMessage =
                   message.role === "user" &&
                   index ===
-                    messages
+                    safeMessages
                       .map((m) => (m.role === "user" ? m : null))
                       .filter(Boolean).length -
                       1 +
-                      messages
+                      safeMessages
                         .slice(0, index + 1)
                         .filter((m) => m.role === "user").length -
                       1;
 
                 // Simpler approach: find the last user message index
-                const lastUserMessageIndex = messages
+                const lastUserMessageIndex = safeMessages
                   .map((m, i) => (m.role === "user" ? i : -1))
                   .filter((i) => i !== -1)
                   .pop();

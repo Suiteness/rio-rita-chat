@@ -23,6 +23,11 @@ export type Message =
   | {
       type: "all";
       messages: ChatMessage[];
+    }
+  | {
+      type: "connection";
+      status: string;
+      connectionId: string;
     };
 
 // GigaML API Types

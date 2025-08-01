@@ -173,22 +173,13 @@ export class Chat implements DurableObject {
     );
   }
 
-  async handleWebSocketConnect(ws: WebSocket, originalRoomId?: string): Promise<void> {
-    const connectionId = crypto.randomUUID();
-    console.log(`WebSocket connecting with ID: ${connectionId}`);
-    this.connections.set(ws, { id: connectionId });
 
-    // Send existing messages
-    ws.send(JSON.stringify({
-      type: "all",
-      messages: this.messages,
-    } satisfies Message));
 
-    // Setup GigaML session (allow connection even if this fails for development)
+  async setupGigaMLSessionAsync(ws: WebSocket, connectionId: string, originalRoomId?: string): Promise<void> {
     try {
       const userId = connectionId;
-      const ticketId = originalRoomId || this.state.id.toString(); // Use original room ID from URL if available
-      console.log(`🔄 Checking for existing GigaML session with ticket ID: ${ticketId}`);
+      const ticketId = originalRoomId || this.state.id.toString();
+      console.log(`🔄 Setting up GigaML session for ${connectionId} with ticket ID: ${ticketId}`);
       
       // Check if we already have an active session for this ticket ID
       let existingSession: GigaMLSession | null = null;
@@ -269,16 +260,20 @@ export class Chat implements DurableObject {
       
       // Now attach the session to the new connection
       this.gigamlSessions.set(connectionId, session);
+      
+      // Update the connection data with the session
       const connectionData = this.connections.get(ws);
       if (connectionData) {
         connectionData.gigamlSession = session;
         console.log(`🔗 GigaML session attached to connection: ${connectionId} -> ${session.ticketId}`);
+      } else {
+        console.error(`❌ Could not find connection data for ${connectionId} to attach session`);
       }
       
       console.log(`📊 Active sessions in memory: ${this.gigamlSessions.size}`);
       console.log(`📊 Active connections: ${this.connections.size}`);
     } catch (error) {
-      console.error("Failed to setup GigaML session (continuing without AI):", error);
+      console.error(`Failed to setup GigaML session for ${connectionId}:`, error);
       // Continue without GigaML session for development
     }
   }
@@ -435,16 +430,43 @@ export class Chat implements DurableObject {
         const webSocketPair = new WebSocketPair();
         const [client, server] = Object.values(webSocketPair);
         
-        // Immediately establish the connection by accepting the WebSocket
-        this.state.acceptWebSocket(server);
-        
         // Extract original room ID from request headers if available
         const originalRoomId = request.headers.get("x-original-room-id");
         
+        // Immediately establish the connection by accepting the WebSocket
+        this.state.acceptWebSocket(server);
+        
         // Set up the connection and initiate GigaML session asynchronously
-        // Don't await this to avoid blocking the WebSocket upgrade response
-        this.handleWebSocketConnect(server, originalRoomId || undefined).catch(error => {
-          console.error("Failed to setup WebSocket connection:", error);
+        // But ensure basic connection is established first
+        const connectionId = crypto.randomUUID();
+        console.log(`WebSocket upgrade: establishing connection ${connectionId}`);
+        
+        // Immediately set up basic connection data
+        const connectionData: { id: string; gigamlSession?: GigaMLSession } = { id: connectionId };
+        this.connections.set(server, connectionData);
+        
+        // Send initial messages immediately
+        try {
+          server.send(JSON.stringify({
+            type: "all",
+            messages: this.messages,
+          } satisfies Message));
+          console.log(`WebSocket upgrade: sent initial messages to ${connectionId}`);
+          
+          // Also send a connection confirmation message
+          server.send(JSON.stringify({
+            type: "connection",
+            status: "connected",
+            connectionId: connectionId,
+          }));
+          
+        } catch (error) {
+          console.error(`WebSocket upgrade: failed to send initial messages to ${connectionId}:`, error);
+        }
+        
+        // Set up GigaML session asynchronously - don't await to avoid blocking upgrade
+        this.setupGigaMLSessionAsync(server, connectionId, originalRoomId || undefined).catch((error: unknown) => {
+          console.error(`Failed to setup GigaML session for ${connectionId}:`, error);
         });
         
         return new Response(null, {
