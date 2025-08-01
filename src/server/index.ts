@@ -188,38 +188,85 @@ export class Chat implements DurableObject {
     try {
       const userId = connectionId;
       const ticketId = originalRoomId || this.state.id.toString(); // Use original room ID from URL if available
-      console.log(`Attempting to initiate GigaML session for user ${userId} with ticket ID ${ticketId}`);
-      const returnedTicketId = await this.initiateGigaMLSession(userId, ticketId);
-      console.log(`GigaML ticket ID confirmed: ${returnedTicketId}`);
+      console.log(`🔄 Checking for existing GigaML session with ticket ID: ${ticketId}`);
       
-      const session: GigaMLSession = {
-        ticketId: returnedTicketId,
-        userId,
-        status: "active",
-        createdAt: new Date().toISOString(),
-      };
+      // Check if we already have an active session for this ticket ID
+      let existingSession: GigaMLSession | null = null;
       
+      // First check in memory
+      for (const [_, session] of this.gigamlSessions.entries()) {
+        if (session.ticketId === ticketId && session.status === "active") {
+          existingSession = session;
+          console.log(`🔄 Found existing session in memory: ${session.ticketId}`);
+          break;
+        }
+      }
+      
+      // If not in memory, check database
+      if (!existingSession) {
+        const dbResult = this.state.storage.sql
+          .exec(`SELECT * FROM gigaml_sessions WHERE ticket_id = ? AND status = 'active' LIMIT 1`, ticketId)
+          .toArray();
+        
+        if (dbResult.length > 0) {
+          const dbSession = dbResult[0] as any;
+          existingSession = {
+            ticketId: dbSession.ticket_id,
+            userId: dbSession.user_id,
+            status: dbSession.status,
+            createdAt: dbSession.created_at,
+          };
+          console.log(`🔄 Found existing session in database: ${existingSession.ticketId}`);
+        }
+      }
+      
+      let session: GigaMLSession;
+      
+      if (existingSession) {
+        // Reuse existing session
+        session = existingSession;
+        console.log(`🔄 Reusing existing GigaML session: ${session.ticketId}`);
+        
+        // Ensure session is registered in router (critical for webhook routing)
+        await this.registerSessionInRouter(session.ticketId, ticketId);
+        console.log(`🔄 Session re-registered in webhook router: ${session.ticketId}`);
+      } else {
+        // Create new session
+        console.log(`🆕 Creating new GigaML session for user ${userId} with ticket ID ${ticketId}`);
+        const returnedTicketId = await this.initiateGigaMLSession(userId, ticketId);
+        console.log(`🆕 GigaML ticket ID confirmed: ${returnedTicketId}`);
+        
+        session = {
+          ticketId: returnedTicketId,
+          userId,
+          status: "active",
+          createdAt: new Date().toISOString(),
+        };
+        
+        // Store in database
+        this.state.storage.sql.exec(
+          `INSERT INTO gigaml_sessions (connection_id, ticket_id, user_id, room_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          connectionId,
+          returnedTicketId,
+          userId,
+          ticketId,
+          "active",
+          session.createdAt
+        );
+        
+        await this.registerSessionInRouter(returnedTicketId, ticketId);
+        console.log(`🆕 New GigaML session created: ${returnedTicketId}`);
+      }
+      
+      // Attach session to this connection
       this.gigamlSessions.set(connectionId, session);
       const connectionData = this.connections.get(ws);
       if (connectionData) {
         connectionData.gigamlSession = session;
-        console.log(`GigaML session attached to connection: ${connectionId}`);
+        console.log(`🔗 GigaML session attached to connection: ${connectionId} -> ${session.ticketId}`);
       }
-      
-      this.state.storage.sql.exec(
-        `INSERT INTO gigaml_sessions (connection_id, ticket_id, user_id, room_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-        connectionId,
-        returnedTicketId,
-        userId,
-        ticketId,
-        "active",
-        session.createdAt
-      );
-      
-      await this.registerSessionInRouter(returnedTicketId, ticketId);
-      console.log(`GigaML session initiated: ${returnedTicketId}`);
     } catch (error) {
-      console.error("Failed to initiate GigaML session (continuing without AI):", error);
+      console.error("Failed to setup GigaML session (continuing without AI):", error);
       // Continue without GigaML session for development
     }
   }
@@ -272,29 +319,33 @@ export class Chat implements DurableObject {
   }
 
   async handleWebSocketClose(ws: WebSocket): Promise<void> {
+    console.log(`🔌❌ WebSocket closing...`);
     const connectionData = this.connections.get(ws);
+    console.log(`🔌❌ Connection data:`, JSON.stringify(connectionData, null, 2));
+    console.log(`🔌❌ Connections before close: ${this.connections.size}`);
+    console.log(`🔌❌ Sessions before close: ${this.gigamlSessions.size}`);
+    
     if (connectionData?.gigamlSession) {
       const session = connectionData.gigamlSession;
-      try {
-        await this.closeGigaMLSession(session.ticketId);
-        session.status = "closed";
-        
-        this.state.storage.sql.exec(
-          `UPDATE gigaml_sessions SET status = ? WHERE connection_id = ?`,
-          "closed",
-          connectionData.id
-        );
-        
-        await this.unregisterSessionFromRouter(session.ticketId);
-        console.log(`GigaML session closed: ${session.ticketId}`);
-      } catch (error) {
-        console.error("Failed to close GigaML session:", error);
-      }
       
-      this.gigamlSessions.delete(connectionData.id);
+      // DO NOT close the GigaML session - let GigaML handle timeouts (1 hour default)
+      // Users should be able to leave/refresh and continue the conversation
+      console.log(`🔌❌ Keeping GigaML session active for reconnection: ${session.ticketId}`);
+      console.log(`🔌❌ Session will timeout automatically on GigaML's side after inactivity`);
+      
+      // Keep the session in memory for faster reconnection
+      // DO NOT remove from gigamlSessions Map - preserve for reconnection
+      console.log(`🔌❌ Session ${session.ticketId} will remain in memory for reconnection`);
+      
+      // DO NOT call unregisterSessionFromRouter - keep session registered for webhooks
+      console.log(`🔌❌ Session registry preserved for webhook routing`);
     }
     
+    // Only remove the WebSocket connection, but preserve session state everywhere
     this.connections.delete(ws);
+    console.log(`🔌❌ Connections after close: ${this.connections.size}`);
+    console.log(`🔌❌ Sessions still in memory: ${this.gigamlSessions.size}`);
+    console.log(`🔌❌ Session preserved for reconnection in both memory and database`);
   }
 
   private async registerSessionInRouter(ticketId: string, roomId: string): Promise<void> {
@@ -517,8 +568,10 @@ export class Chat implements DurableObject {
     try {
       const body = await request.json() as { ticketId: string; roomId: string };
       
+      // Ensure the table exists with correct schema
+      this.state.storage.sql.exec(`DROP TABLE IF EXISTS session_registry`);
       this.state.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS session_registry (ticket_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
+        `CREATE TABLE session_registry (ticket_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
       );
       
       this.state.storage.sql.exec(
@@ -528,6 +581,7 @@ export class Chat implements DurableObject {
         new Date().toISOString()
       );
       
+      console.log(`Session registered: ${body.ticketId} -> ${body.roomId}`);
       return new Response("OK", { status: 200 });
     } catch (error) {
       console.error("Error registering session:", error);
@@ -572,19 +626,12 @@ export class Chat implements DurableObject {
       
       console.log("=== Webhook Router: Looking up ticket ===", ticketId);
       
-      // First, let's see what's in the registry table
-      console.log("=== Webhook Router: Checking registry table exists ===");
-      const tableExists = this.state.storage.sql
-        .exec(`SELECT name FROM sqlite_master WHERE type='table' AND name='session_registry'`)
-        .toArray();
-      console.log("=== Webhook Router: Registry table exists ===", tableExists.length > 0);
-      
-      if (tableExists.length > 0) {
-        const allSessions = this.state.storage.sql
-          .exec(`SELECT * FROM session_registry`)
-          .toArray();
-        console.log("=== Webhook Router: All sessions in registry ===", allSessions);
-      }
+      // Ensure the session registry table has the correct schema
+      console.log("=== Webhook Router: Creating/updating session registry table ===");
+      this.state.storage.sql.exec(`DROP TABLE IF EXISTS session_registry`);
+      this.state.storage.sql.exec(
+        `CREATE TABLE session_registry (ticket_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
+      );
       
       const sessionRegistry = this.state.storage.sql
         .exec(`SELECT room_id FROM session_registry WHERE ticket_id = ? LIMIT 1`, ticketId)
@@ -594,83 +641,40 @@ export class Chat implements DurableObject {
       
       if (sessionRegistry.length === 0) {
         console.log(`=== Webhook Router: No session found in registry for ${ticketId} ===`);
-        console.log("=== Webhook Router: Trying ticket_id lookup instead ===");
-        
-        // Try looking up by ticket_id directly
-        const ticketRegistry = this.state.storage.sql
-          .exec(`SELECT room_id FROM session_registry WHERE ticket_id = ? LIMIT 1`, body.ticket_id)
-          .toArray();
-        console.log("=== Webhook Router: Ticket registry result ===", ticketRegistry);
-        
-        if (ticketRegistry.length === 0) {
-          return new Response("Session not found", { status: 404 });
-        }
-        
-        // Use the ticket result
-        const roomId = (ticketRegistry[0] as any).room_id;
-        console.log("=== Webhook Router: Found room ID via ticket_id ===", roomId);
-        
-        const chatId = this.env?.Chat?.idFromString?.(roomId);
-        if (!chatId) {
-          console.error(`=== Webhook Router: Failed to create chat ID from room ID: ${roomId} ===`);
-          return new Response("Invalid room", { status: 400 });
-        }
-        
-        const chatObject = this.env?.Chat?.get?.(chatId);
-        if (!chatObject) {
-          console.log("=== Webhook Router: Chat object not available ===");
-          return new Response("Room not available", { status: 500 });
-        }
-        
-        const targetRequest = new Request(`https://internal/webhook/gigaml`, {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            // Forward authorization header from original request
-            ...(request.headers.get("Authorization") && {
-              "Authorization": request.headers.get("Authorization")!
-            })
-          },
-          body: JSON.stringify(body),
-        });
-        
-        console.log(`=== Webhook Router: Routing webhook for ticket ${ticketId} to room ${roomId} ===`);
-        const response = await chatObject.fetch(targetRequest);
-        console.log("=== Webhook Router: Final response status ===", response.status);
-        return response;
-      } else {
-        const roomId = (sessionRegistry[0] as any).room_id;
-        console.log("=== Webhook Router: Found room ID via ticketId ===", roomId);
-        
-        const chatId = this.env?.Chat?.idFromString?.(roomId);
-        if (!chatId) {
-          console.error(`=== Webhook Router: Failed to create chat ID from room ID: ${roomId} ===`);
-          return new Response("Invalid room", { status: 400 });
-        }
-        
-        const chatObject = this.env?.Chat?.get?.(chatId);
-        if (!chatObject) {
-          console.log("=== Webhook Router: Chat object not available ===");
-          return new Response("Room not available", { status: 500 });
-        }
-        
-        const targetRequest = new Request(`https://internal/webhook/gigaml`, {
-          method: "POST",
-          headers: { 
-            "Content-Type": "application/json",
-            // Forward authorization header from original request
-            ...(request.headers.get("Authorization") && {
-              "Authorization": request.headers.get("Authorization")!
-            })
-          },
-          body: JSON.stringify(body),
-        });
-        
-        console.log(`=== Webhook Router: Routing webhook for ticket ${ticketId} to room ${roomId} ===`);
-        const response = await chatObject.fetch(targetRequest);
-        console.log("=== Webhook Router: Final response status ===", response.status);
-        return response;
+        return new Response("Session not found", { status: 404 });
       }
+      
+      const roomId = (sessionRegistry[0] as any).room_id;
+      console.log("=== Webhook Router: Found room ID via ticketId ===", roomId);
+      
+      const chatId = this.env?.Chat?.idFromName?.(roomId);
+      if (!chatId) {
+        console.error(`=== Webhook Router: Failed to create chat ID from room ID: ${roomId} ===`);
+        return new Response("Invalid room", { status: 400 });
+      }
+      
+      const chatObject = this.env?.Chat?.get?.(chatId);
+      if (!chatObject) {
+        console.log("=== Webhook Router: Chat object not available ===");
+        return new Response("Room not available", { status: 500 });
+      }
+      
+      const targetRequest = new Request(`https://internal/webhook/gigaml`, {
+        method: "POST",
+        headers: { 
+          "Content-Type": "application/json",
+          // Forward authorization header from original request
+          ...(request.headers.get("Authorization") && {
+            "Authorization": request.headers.get("Authorization")!
+          })
+        },
+        body: JSON.stringify(body),
+      });
+      
+      console.log(`=== Webhook Router: Routing webhook for ticket ${ticketId} to room ${roomId} ===`);
+      const response = await chatObject.fetch(targetRequest);
+      console.log("=== Webhook Router: Final response status ===", response.status);
+      return response;
     } catch (error) {
       console.error("Error in webhook router:", error);
       return new Response("Router error", { status: 500 });
