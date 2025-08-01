@@ -10,7 +10,8 @@ import type {
 
 // GigaML API Types
 export type GigaMLSession = {
-  sessionId: string;
+  sessionId: string; // Internal session tracking ID
+  ticketId: string;  // GigaML's ticket_id
   userId: string;
   roomId: string;
   status: "active" | "closed";
@@ -198,6 +199,7 @@ export class Chat implements DurableObject {
       
       const session: GigaMLSession = {
         sessionId,
+        ticketId,
         userId,
         roomId,
         status: "active",
@@ -443,8 +445,11 @@ export class Chat implements DurableObject {
       console.log("=== Webhook Body ===");
       console.log(JSON.stringify(body, null, 2));
       
-      if (!body.sessionId || !body.message) {
-        console.log("Invalid payload structure - missing sessionId or message");
+      // GigaML uses ticket_id as the session identifier
+      const sessionId = body.ticket_id || body.sessionId;
+      
+      if (!sessionId || !body.message) {
+        console.log("Invalid payload structure - missing ticket_id or message");
         return new Response("Invalid webhook payload", { status: 400 });
       }
       
@@ -452,7 +457,7 @@ export class Chat implements DurableObject {
       let targetSession: GigaMLSession | null = null;
       
       for (const [connectionId, session] of this.gigamlSessions.entries()) {
-        if (session.sessionId === body.sessionId) {
+        if (session.sessionId === sessionId) {
           targetSession = session;
           break;
         }
@@ -460,7 +465,7 @@ export class Chat implements DurableObject {
       
       if (!targetSession) {
         const dbResult = this.state.storage.sql
-          .exec(`SELECT * FROM gigaml_sessions WHERE session_id = ? AND status = 'active'`, body.sessionId)
+          .exec(`SELECT * FROM gigaml_sessions WHERE session_id = ? AND status = 'active'`, sessionId)
           .toArray();
         
         if (dbResult.length === 0) {
@@ -470,6 +475,7 @@ export class Chat implements DurableObject {
         const dbSession = dbResult[0] as any;
         targetSession = {
           sessionId: dbSession.session_id,
+          ticketId: dbSession.session_id, // Use session_id as ticket_id from DB
           userId: dbSession.user_id,
           roomId: dbSession.room_id,
           status: dbSession.status,
@@ -491,7 +497,7 @@ export class Chat implements DurableObject {
         ...assistantMessage,
       });
       
-      console.log(`GigaML response processed for session ${body.sessionId}`);
+      console.log(`GigaML response processed for session ${sessionId}`);
       return new Response("OK", { status: 200 });
     } catch (error) {
       console.error("Error handling GigaML webhook:", error);
@@ -557,7 +563,10 @@ export class Chat implements DurableObject {
       console.log("=== Webhook Router: Body received ===");
       console.log(JSON.stringify(body, null, 2));
       
-      if (!body.sessionId) {
+      // GigaML uses ticket_id, but we normalize to sessionId for internal routing
+      const sessionId = body.sessionId || body.ticket_id;
+      
+      if (!sessionId) {
         console.log("=== Webhook Router: No sessionId found ===");
         return new Response("Invalid webhook payload", { status: 400 });
       }
@@ -568,15 +577,15 @@ export class Chat implements DurableObject {
         return new Response("Invalid router", { status: 400 });
       }
       
-      console.log("=== Webhook Router: Looking up session ===", body.sessionId);
+      console.log("=== Webhook Router: Looking up session ===", sessionId);
       const sessionRegistry = this.state.storage.sql
-        .exec(`SELECT room_id FROM session_registry WHERE session_id = ? LIMIT 1`, body.sessionId)
+        .exec(`SELECT room_id FROM session_registry WHERE session_id = ? LIMIT 1`, sessionId)
         .toArray();
       
       console.log("=== Webhook Router: Session registry result ===", sessionRegistry);
       
       if (sessionRegistry.length === 0) {
-        console.log(`=== Webhook Router: No session found in registry for ${body.sessionId} ===`);
+        console.log(`=== Webhook Router: No session found in registry for ${sessionId} ===`);
         return new Response("Session not found", { status: 404 });
       }
       
@@ -607,7 +616,7 @@ export class Chat implements DurableObject {
         body: JSON.stringify(body),
       });
       
-      console.log(`=== Webhook Router: Routing webhook for session ${body.sessionId} to room ${roomId} ===`);
+      console.log(`=== Webhook Router: Routing webhook for session ${sessionId} to room ${roomId} ===`);
       const response = await chatObject.fetch(targetRequest);
       console.log("=== Webhook Router: Final response status ===", response.status);
       return response;
@@ -655,17 +664,43 @@ export default {
           
           // Clone the request to preserve the original body
           const clonedRequest = request.clone();
-          const body = await clonedRequest.json() as any;
-          console.log("=== Main Worker: Webhook body ===");
-          console.log(JSON.stringify(body, null, 2));
           
-          if (!body.sessionId) {
-            console.log("=== Main Worker: Missing sessionId in body ===");
-            return new Response("Invalid webhook payload", { status: 400 });
+          // Get raw text first to see exactly what we're receiving
+          const bodyText = await clonedRequest.text();
+          console.log("=== Main Worker: Raw webhook body ===");
+          console.log(bodyText);
+          
+          let body: any;
+          try {
+            body = JSON.parse(bodyText);
+            console.log("=== Main Worker: Parsed webhook body ===");
+            console.log(JSON.stringify(body, null, 2));
+          } catch (parseError) {
+            console.log("=== Main Worker: Failed to parse JSON ===");
+            console.log("Parse error:", parseError);
+            return new Response("Invalid JSON payload", { status: 400 });
           }
+          
+          // Check for various possible session identifier fields
+          const sessionId = body.ticket_id || body.sessionId || body.session_id || body.ticketId;
+          
+          if (!sessionId) {
+            console.log("=== Main Worker: No session identifier found ===");
+            console.log("Available fields:", Object.keys(body));
+            return new Response("Invalid webhook payload - no session identifier", { status: 400 });
+          }
+          
+          console.log("=== Main Worker: Using session identifier ===", sessionId);
           
           const routerId = env.Chat.idFromName("webhook-router");
           const routerObject = env.Chat.get(routerId);
+          
+          // Normalize the body to always have sessionId for internal routing
+          // but preserve the original ticket_id
+          const normalizedBody = {
+            ...body,
+            sessionId: sessionId
+          };
           
           const routerRequest = new Request(`${url.origin}/route-webhook`, {
             method: "POST",
@@ -676,7 +711,7 @@ export default {
                 "Authorization": request.headers.get("Authorization")!
               })
             },
-            body: JSON.stringify(body),
+            body: JSON.stringify(normalizedBody),
           });
           
           console.log("=== Main Worker: Routing to webhook router ===");
