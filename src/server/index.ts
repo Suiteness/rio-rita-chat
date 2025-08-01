@@ -413,22 +413,31 @@ export class Chat implements DurableObject {
   // Webhook endpoint to receive messages from GigaML
   async handleGigaMLWebhook(request: Request): Promise<Response> {
     try {
+      console.log("Received GigaML webhook request");
+      
       // Validate authentication
       const authHeader = request.headers.get("Authorization");
       const expectedApiKey = this.env?.GIGAML_API_KEY;
       
+      console.log("Auth header present:", !!authHeader);
+      console.log("Expected API key present:", !!expectedApiKey);
+      
       if (!authHeader || !expectedApiKey) {
+        console.log("Missing auth header or API key");
         return new Response("Unauthorized", { status: 401 });
       }
       
       const token = authHeader.replace("Bearer ", "");
       if (token !== expectedApiKey) {
+        console.log("Invalid API key");
         return new Response("Unauthorized", { status: 401 });
       }
       
       const body = await request.json() as any;
+      console.log("Webhook body:", JSON.stringify(body, null, 2));
       
       if (!body.sessionId || !body.message) {
+        console.log("Invalid payload structure");
         return new Response("Invalid webhook payload", { status: 400 });
       }
       
@@ -479,6 +488,7 @@ export class Chat implements DurableObject {
       return new Response("OK", { status: 200 });
     } catch (error) {
       console.error("Error handling GigaML webhook:", error);
+      console.error("Error stack:", error instanceof Error ? error.stack : "No stack trace");
       return new Response("Internal server error", { status: 500 });
     }
   }
@@ -568,7 +578,13 @@ export class Chat implements DurableObject {
       
       const targetRequest = new Request(`https://example.com/webhook/gigaml`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          // Forward authorization header from original request
+          ...(request.headers.get("Authorization") && {
+            "Authorization": request.headers.get("Authorization")!
+          })
+        },
         body: JSON.stringify(body),
       });
       
@@ -612,7 +628,9 @@ export default {
       // Handle GigaML webhook
       if (url.pathname === "/webhook/gigaml" && request.method === "POST") {
         try {
-          const body = await request.json() as any;
+          // Clone the request to preserve the original body
+          const clonedRequest = request.clone();
+          const body = await clonedRequest.json() as any;
           
           if (!body.sessionId) {
             return new Response("Invalid webhook payload", { status: 400 });
@@ -623,7 +641,13 @@ export default {
           
           const routerRequest = new Request(`${url.origin}/route-webhook`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: { 
+              "Content-Type": "application/json",
+              // Forward authorization if present
+              ...(request.headers.get("Authorization") && {
+                "Authorization": request.headers.get("Authorization")!
+              })
+            },
             body: JSON.stringify(body),
           });
           
