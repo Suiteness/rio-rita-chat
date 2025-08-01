@@ -46,7 +46,6 @@ export type GigaMLInitiateSessionResponse = {
 };
 
 export type GigaMLReceiveMessageRequest = {
-  sessionId: string;
   ticket_id: string;
   message_id: string;
   message: {
@@ -59,19 +58,11 @@ export type GigaMLReceiveMessageRequest = {
 
 export type GigaMLReceiveMessageResponse = {
   status: string;
-  messageId: string;
-};
-
-export type GigaMLSendMessageRequest = {
-  sessionId: string;
-  message: {
-    type: "text" | "image" | "file";
-    content: string;
-    metadata?: Record<string, any>;
-  };
+  messageId?: string;
 };
 
 export type GigaMLCloseSessionRequest = {
-  sessionId: string;
+  ticket_id: string;
   reason?: string;
+  status: string;
 };

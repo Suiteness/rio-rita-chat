@@ -10,10 +10,8 @@ import type {
 
 // GigaML API Types
 export type GigaMLSession = {
-  sessionId: string; // Internal session tracking ID
-  ticketId: string;  // GigaML's ticket_id
+  ticketId: string;  // GigaML's ticket_id (used as primary identifier)
   userId: string;
-  roomId: string;
   status: "active" | "closed";
   createdAt: string;
 };
@@ -58,7 +56,7 @@ export class Chat implements DurableObject {
     );
 
     this.state.storage.sql.exec(
-      `CREATE TABLE IF NOT EXISTS gigaml_sessions (connection_id TEXT PRIMARY KEY, session_id TEXT, user_id TEXT, room_id TEXT, status TEXT, created_at TEXT)`,
+      `CREATE TABLE IF NOT EXISTS gigaml_sessions (connection_id TEXT PRIMARY KEY, ticket_id TEXT, user_id TEXT, room_id TEXT, status TEXT, created_at TEXT)`,
     );
 
     // Load messages from database
@@ -121,13 +119,12 @@ export class Chat implements DurableObject {
     }
   }
 
-  private async initiateGigaMLSession(userId: string, roomId: string, ticketId?: string): Promise<string> {
+  private async initiateGigaMLSession(userId: string, ticketId: string): Promise<string> {
     const request: GigaMLInitiateSessionRequest = {
       agent_template_id: this.env?.GIGAML_AGENT_ID || this.AGENT_ID,
-      ticket_id: ticketId || `chat_${roomId}_${Date.now()}`,
+      ticket_id: ticketId,
       initialization_values: {
         userId,
-        roomId,
         platform: "rio-rita-chat",
       },
     };
@@ -138,14 +135,12 @@ export class Chat implements DurableObject {
       request
     );
 
-    // If the response doesn't have a sessionId, use the ticket_id as sessionId
-    return response.sessionId || request.ticket_id;
+    return ticketId; // Return the ticketId we sent
   }
 
-  private async sendMessageToGigaML(sessionId: string, message: string, ticketId: string): Promise<void> {
-    console.log(`*** sendMessageToGigaML CALLED: sessionId=${sessionId}, ticketId=${ticketId}, message=${message} ***`);
+  private async sendMessageToGigaML(ticketId: string, message: string): Promise<void> {
+    console.log(`*** sendMessageToGigaML CALLED: ticketId=${ticketId}, message=${message} ***`);
     const request: GigaMLReceiveMessageRequest = {
-      sessionId,
       ticket_id: ticketId,
       message_id: `msg_${Date.now()}_${crypto.randomUUID()}`,
       message: {
@@ -164,10 +159,11 @@ export class Chat implements DurableObject {
     );
   }
 
-  private async closeGigaMLSession(sessionId: string): Promise<void> {
+  private async closeGigaMLSession(ticketId: string): Promise<void> {
     const request: GigaMLCloseSessionRequest = {
-      sessionId,
-      reason: "User disconnected",
+      ticket_id: ticketId,
+      reason: "user_request",
+      status: "COMPLETED"
     };
 
     await this.callGigaMLAPI(
@@ -191,17 +187,14 @@ export class Chat implements DurableObject {
     // Setup GigaML session (allow connection even if this fails for development)
     try {
       const userId = connectionId;
-      const roomId = this.state.id.toString();
-      const ticketId = originalRoomId || roomId; // Use original room ID from URL if available
-      console.log(`Attempting to initiate GigaML session for user ${userId} in room ${roomId} with ticket ID ${ticketId}`);
-      const sessionId = await this.initiateGigaMLSession(userId, roomId, ticketId);
-      console.log(`GigaML session ID received: ${sessionId}`);
+      const ticketId = originalRoomId || this.state.id.toString(); // Use original room ID from URL if available
+      console.log(`Attempting to initiate GigaML session for user ${userId} with ticket ID ${ticketId}`);
+      const returnedTicketId = await this.initiateGigaMLSession(userId, ticketId);
+      console.log(`GigaML ticket ID confirmed: ${returnedTicketId}`);
       
       const session: GigaMLSession = {
-        sessionId,
-        ticketId,
+        ticketId: returnedTicketId,
         userId,
-        roomId,
         status: "active",
         createdAt: new Date().toISOString(),
       };
@@ -214,17 +207,17 @@ export class Chat implements DurableObject {
       }
       
       this.state.storage.sql.exec(
-        `INSERT INTO gigaml_sessions (connection_id, session_id, user_id, room_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO gigaml_sessions (connection_id, ticket_id, user_id, room_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
         connectionId,
-        sessionId,
+        returnedTicketId,
         userId,
-        roomId,
+        ticketId,
         "active",
         session.createdAt
       );
       
-      await this.registerSessionInRouter(sessionId, roomId);
-      console.log(`GigaML session initiated: ${sessionId}`);
+      await this.registerSessionInRouter(returnedTicketId, ticketId);
+      console.log(`GigaML session initiated: ${returnedTicketId}`);
     } catch (error) {
       console.error("Failed to initiate GigaML session (continuing without AI):", error);
       // Continue without GigaML session for development
@@ -255,8 +248,8 @@ export class Chat implements DurableObject {
         if (session && session.status === "active") {
           try {
             console.log(`Sending message to GigaML: ${parsed.content}`);
-            await this.sendMessageToGigaML(session.sessionId, parsed.content, session.sessionId);
-            console.log(`Message sent to GigaML: ${session.sessionId}`);
+            await this.sendMessageToGigaML(session.ticketId, parsed.content);
+            console.log(`Message sent to GigaML: ${session.ticketId}`);
           } catch (error) {
             console.error("Failed to send message to GigaML:", error);
             
@@ -283,7 +276,7 @@ export class Chat implements DurableObject {
     if (connectionData?.gigamlSession) {
       const session = connectionData.gigamlSession;
       try {
-        await this.closeGigaMLSession(session.sessionId);
+        await this.closeGigaMLSession(session.ticketId);
         session.status = "closed";
         
         this.state.storage.sql.exec(
@@ -292,8 +285,8 @@ export class Chat implements DurableObject {
           connectionData.id
         );
         
-        await this.unregisterSessionFromRouter(session.sessionId);
-        console.log(`GigaML session closed: ${session.sessionId}`);
+        await this.unregisterSessionFromRouter(session.ticketId);
+        console.log(`GigaML session closed: ${session.ticketId}`);
       } catch (error) {
         console.error("Failed to close GigaML session:", error);
       }
@@ -304,7 +297,7 @@ export class Chat implements DurableObject {
     this.connections.delete(ws);
   }
 
-  private async registerSessionInRouter(sessionId: string, roomId: string): Promise<void> {
+  private async registerSessionInRouter(ticketId: string, roomId: string): Promise<void> {
     try {
       const routerId = this.env?.Chat?.idFromName?.("webhook-router");
       if (!routerId || !this.env?.Chat) return;
@@ -314,7 +307,7 @@ export class Chat implements DurableObject {
       const registerRequest = new Request("https://internal/register-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, roomId }),
+        body: JSON.stringify({ ticketId: ticketId, roomId }),
       });
       
       await routerObject.fetch(registerRequest);
@@ -323,7 +316,7 @@ export class Chat implements DurableObject {
     }
   }
 
-  private async unregisterSessionFromRouter(sessionId: string): Promise<void> {
+  private async unregisterSessionFromRouter(ticketId: string): Promise<void> {
     try {
       const routerId = this.env?.Chat?.idFromName?.("webhook-router");
       if (!routerId || !this.env?.Chat) return;
@@ -333,7 +326,7 @@ export class Chat implements DurableObject {
       const unregisterRequest = new Request("https://internal/unregister-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId }),
+        body: JSON.stringify({ ticketId: ticketId }),
       });
       
       await routerObject.fetch(unregisterRequest);
@@ -446,9 +439,9 @@ export class Chat implements DurableObject {
       console.log(JSON.stringify(body, null, 2));
       
       // GigaML uses ticket_id as the session identifier
-      const sessionId = body.ticket_id || body.sessionId;
+      const ticketId = body.ticket_id;
       
-      if (!sessionId || !body.message) {
+      if (!ticketId || !body.message) {
         console.log("Invalid payload structure - missing ticket_id or message");
         return new Response("Invalid webhook payload", { status: 400 });
       }
@@ -457,7 +450,7 @@ export class Chat implements DurableObject {
       let targetSession: GigaMLSession | null = null;
       
       for (const [connectionId, session] of this.gigamlSessions.entries()) {
-        if (session.sessionId === sessionId) {
+        if (session.ticketId === ticketId) {
           targetSession = session;
           break;
         }
@@ -465,7 +458,7 @@ export class Chat implements DurableObject {
       
       if (!targetSession) {
         const dbResult = this.state.storage.sql
-          .exec(`SELECT * FROM gigaml_sessions WHERE session_id = ? AND status = 'active'`, sessionId)
+          .exec(`SELECT * FROM gigaml_sessions WHERE ticket_id = ? AND status = 'active'`, ticketId)
           .toArray();
         
         if (dbResult.length === 0) {
@@ -474,10 +467,8 @@ export class Chat implements DurableObject {
         
         const dbSession = dbResult[0] as any;
         targetSession = {
-          sessionId: dbSession.session_id,
-          ticketId: dbSession.session_id, // Use session_id as ticket_id from DB
+          ticketId: dbSession.ticket_id,
           userId: dbSession.user_id,
-          roomId: dbSession.room_id,
           status: dbSession.status,
           createdAt: dbSession.created_at,
         };
@@ -512,7 +503,7 @@ export class Chat implements DurableObject {
         ...assistantMessage,
       });
       
-      console.log(`GigaML response processed for session ${sessionId}`);
+      console.log(`GigaML response processed for session ${ticketId}`);
       return new Response("OK", { status: 200 });
     } catch (error) {
       console.error("Error handling GigaML webhook:", error);
@@ -524,15 +515,15 @@ export class Chat implements DurableObject {
   // Handle session registration in the webhook router
   async handleSessionRegistration(request: Request): Promise<Response> {
     try {
-      const body = await request.json() as { sessionId: string; roomId: string };
+      const body = await request.json() as { ticketId: string; roomId: string };
       
       this.state.storage.sql.exec(
-        `CREATE TABLE IF NOT EXISTS session_registry (session_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
+        `CREATE TABLE IF NOT EXISTS session_registry (ticket_id TEXT PRIMARY KEY, room_id TEXT, created_at TEXT)`
       );
       
       this.state.storage.sql.exec(
-        `INSERT OR REPLACE INTO session_registry (session_id, room_id, created_at) VALUES (?, ?, ?)`,
-        body.sessionId,
+        `INSERT OR REPLACE INTO session_registry (ticket_id, room_id, created_at) VALUES (?, ?, ?)`,
+        body.ticketId,
         body.roomId,
         new Date().toISOString()
       );
@@ -546,11 +537,11 @@ export class Chat implements DurableObject {
 
   async handleSessionUnregistration(request: Request): Promise<Response> {
     try {
-      const body = await request.json() as { sessionId: string };
+      const body = await request.json() as { ticketId: string };
       
       this.state.storage.sql.exec(
-        `DELETE FROM session_registry WHERE session_id = ?`,
-        body.sessionId
+        `DELETE FROM session_registry WHERE ticket_id = ?`,
+        body.ticketId
       );
       
       return new Response("OK", { status: 200 });
@@ -570,16 +561,16 @@ export class Chat implements DurableObject {
       console.log("=== Webhook Router: Body received ===");
       console.log(JSON.stringify(body, null, 2));
       
-      // GigaML uses ticket_id, but we normalize to sessionId for internal routing
-      const sessionId = body.sessionId || body.ticket_id;
+      // GigaML uses ticket_id as the identifier
+      const ticketId = body.ticket_id;
       
-      if (!sessionId) {
-        console.log("=== Webhook Router: No sessionId found ===");
+      if (!ticketId) {
+        console.log("=== Webhook Router: No ticket_id found ===");
         console.log("=== Webhook Router: Available body keys ===", Object.keys(body));
-        return new Response("Invalid webhook payload - no session identifier", { status: 400 });
+        return new Response("Invalid webhook payload - no ticket_id", { status: 400 });
       }
       
-      console.log("=== Webhook Router: Looking up session ===", sessionId);
+      console.log("=== Webhook Router: Looking up ticket ===", ticketId);
       
       // First, let's see what's in the registry table
       console.log("=== Webhook Router: Checking registry table exists ===");
@@ -596,18 +587,18 @@ export class Chat implements DurableObject {
       }
       
       const sessionRegistry = this.state.storage.sql
-        .exec(`SELECT room_id FROM session_registry WHERE session_id = ? LIMIT 1`, sessionId)
+        .exec(`SELECT room_id FROM session_registry WHERE ticket_id = ? LIMIT 1`, ticketId)
         .toArray();
       
       console.log("=== Webhook Router: Session registry result ===", sessionRegistry);
       
       if (sessionRegistry.length === 0) {
-        console.log(`=== Webhook Router: No session found in registry for ${sessionId} ===`);
+        console.log(`=== Webhook Router: No session found in registry for ${ticketId} ===`);
         console.log("=== Webhook Router: Trying ticket_id lookup instead ===");
         
         // Try looking up by ticket_id directly
         const ticketRegistry = this.state.storage.sql
-          .exec(`SELECT room_id FROM session_registry WHERE session_id = ? LIMIT 1`, body.ticket_id)
+          .exec(`SELECT room_id FROM session_registry WHERE ticket_id = ? LIMIT 1`, body.ticket_id)
           .toArray();
         console.log("=== Webhook Router: Ticket registry result ===", ticketRegistry);
         
@@ -643,13 +634,13 @@ export class Chat implements DurableObject {
           body: JSON.stringify(body),
         });
         
-        console.log(`=== Webhook Router: Routing webhook for session ${sessionId} to room ${roomId} ===`);
+        console.log(`=== Webhook Router: Routing webhook for ticket ${ticketId} to room ${roomId} ===`);
         const response = await chatObject.fetch(targetRequest);
         console.log("=== Webhook Router: Final response status ===", response.status);
         return response;
       } else {
         const roomId = (sessionRegistry[0] as any).room_id;
-        console.log("=== Webhook Router: Found room ID via sessionId ===", roomId);
+        console.log("=== Webhook Router: Found room ID via ticketId ===", roomId);
         
         const chatId = this.env?.Chat?.idFromString?.(roomId);
         if (!chatId) {
@@ -675,7 +666,7 @@ export class Chat implements DurableObject {
           body: JSON.stringify(body),
         });
         
-        console.log(`=== Webhook Router: Routing webhook for session ${sessionId} to room ${roomId} ===`);
+        console.log(`=== Webhook Router: Routing webhook for ticket ${ticketId} to room ${roomId} ===`);
         const response = await chatObject.fetch(targetRequest);
         console.log("=== Webhook Router: Final response status ===", response.status);
         return response;
@@ -741,25 +732,23 @@ export default {
             return new Response("Invalid JSON payload", { status: 400 });
           }
           
-          // Check for various possible session identifier fields
-          const sessionId = body.ticket_id || body.sessionId || body.session_id || body.ticketId;
+          // Check for ticket_id field - GigaML always uses this
+          const ticketId = body.ticket_id;
           
-          if (!sessionId) {
-            console.log("=== Main Worker: No session identifier found ===");
+          if (!ticketId) {
+            console.log("=== Main Worker: No ticket_id found ===");
             console.log("Available fields:", Object.keys(body));
-            return new Response("Invalid webhook payload - no session identifier", { status: 400 });
+            return new Response("Invalid webhook payload - no ticket_id", { status: 400 });
           }
           
-          console.log("=== Main Worker: Using session identifier ===", sessionId);
+          console.log("=== Main Worker: Using ticket_id ===", ticketId);
           
           const routerId = env.Chat.idFromName("webhook-router");
           const routerObject = env.Chat.get(routerId);
           
-          // Normalize the body to always have sessionId for internal routing
-          // but preserve the original ticket_id
+          // Keep the original body with ticket_id
           const normalizedBody = {
-            ...body,
-            sessionId: sessionId
+            ...body
           };
           
           const routerRequest = new Request(`${url.origin}/route-webhook`, {

@@ -15,6 +15,9 @@ not_found_handling = "single-page-application"
 name = "Chat"
 class_name = "Chat"
 
+[vars]
+GIGAML_AGENT_ID = "agent_template_8c309492-fbc9-414e-a44a-22be19bee601"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Chat"]
