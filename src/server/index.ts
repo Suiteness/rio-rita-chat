@@ -268,13 +268,62 @@ export class Chat implements DurableObject {
         console.log(`🔗 GigaML session attached to connection: ${connectionId} -> ${session.ticketId}`);
       } else {
         console.error(`❌ Could not find connection data for ${connectionId} to attach session`);
+        // Try to recover by re-creating the connection data
+        const newConnectionData: { id: string; gigamlSession?: GigaMLSession } = { 
+          id: connectionId, 
+          gigamlSession: session 
+        };
+        this.connections.set(ws, newConnectionData);
+        console.log(`🔧 Recovered connection data for ${connectionId}`);
       }
       
-      console.log(`📊 Active sessions in memory: ${this.gigamlSessions.size}`);
+      // Double-check that the connection is properly set up
+      const finalConnectionData = this.connections.get(ws);
+      if (!finalConnectionData) {
+        console.error(`❌ CRITICAL: Connection data still missing after setup for ${connectionId}`);
+        // Force recreate the connection data
+        this.connections.set(ws, { id: connectionId, gigamlSession: session });
+        console.log(`🚨 Force-created connection data for ${connectionId}`);
+      } else if (!finalConnectionData.gigamlSession) {
+        console.error(`❌ CRITICAL: GigaML session missing from connection data for ${connectionId}`);
+        finalConnectionData.gigamlSession = session;
+        console.log(`� Force-attached session to connection data for ${connectionId}`);
+      }
+      
+      console.log(`�📊 Active sessions in memory: ${this.gigamlSessions.size}`);
       console.log(`📊 Active connections: ${this.connections.size}`);
+      console.log(`🔍 Final connection check for ${connectionId}:`, this.connections.get(ws) ? 'OK' : 'MISSING');
     } catch (error) {
-      console.error(`Failed to setup GigaML session for ${connectionId}:`, error);
-      // Continue without GigaML session for development
+      console.error(`❌ Failed to setup GigaML session for ${connectionId}:`, error);
+      console.error("Error details:", error instanceof Error ? error.stack : error);
+      
+      // Ensure connection data exists even if GigaML setup fails
+      const connectionData = this.connections.get(ws);
+      if (!connectionData) {
+        const fallbackConnectionData: { id: string; gigamlSession?: GigaMLSession } = { id: connectionId };
+        this.connections.set(ws, fallbackConnectionData);
+        console.log(`🔧 Created fallback connection data for ${connectionId}`);
+      }
+      
+      // Send an error message to the user
+      try {
+        const errorMessage: ChatMessage = {
+          id: `error_${Date.now()}`,
+          content: "AI assistant is currently unavailable. You can still send messages and they will be processed when the service is restored.",
+          user: "system",
+          role: "assistant",
+        };
+        
+        this.saveMessage(errorMessage);
+        this.broadcastMessage({
+          type: "add",
+          ...errorMessage,
+        });
+      } catch (msgError) {
+        console.error("Failed to send error message to user:", msgError);
+      }
+      
+      // Continue without GigaML session but maintain the connection
     }
   }
 
@@ -294,8 +343,133 @@ export class Chat implements DurableObject {
       // Send to GigaML if user message
       if (parsed.role === "user") {
         console.log("User message detected, checking GigaML session...");
-        const connectionData = this.connections.get(ws);
+        console.log(`🔍 Connections map size: ${this.connections.size}`);
+        console.log(`🔍 Sessions map size: ${this.gigamlSessions.size}`);
+        console.log(`🔍 WebSocket in connections map: ${this.connections.has(ws)}`);
+        
+        let connectionData = this.connections.get(ws);
         console.log("Connection data:", connectionData);
+        console.log(`🔍 Connection data exists: ${!!connectionData}`);
+        
+        if (connectionData) {
+          console.log(`🔍 Connection ID: ${connectionData.id}`);
+          console.log(`🔍 Has GigaML session: ${!!connectionData.gigamlSession}`);
+          if (connectionData.gigamlSession) {
+            console.log(`🔍 Session ticket ID: ${connectionData.gigamlSession.ticketId}`);
+            console.log(`🔍 Session status: ${connectionData.gigamlSession.status}`);
+          }
+        }
+        
+        // If connection data is missing, try to recover
+        if (!connectionData) {
+          console.error("❌ Connection data is missing! Attempting recovery...");
+          console.log(`🔍 Current sessions in memory: ${this.gigamlSessions.size}`);
+          console.log(`🔍 Current connections: ${this.connections.size}`);
+          
+          // Check if we can find a GigaML session for any connection that might be this one
+          // Look for sessions that might belong to this connection
+          let recoveredSession: GigaMLSession | null = null;
+          let recoveredConnectionId: string | null = null;
+          
+          // Try to find the most recent active session as a fallback
+          for (const [connId, session] of this.gigamlSessions.entries()) {
+            if (session.status === "active") {
+              recoveredSession = session;
+              recoveredConnectionId = connId;
+              console.log(`🔧 Found active session that could belong to this connection: ${session.ticketId}`);
+              break;
+            }
+          }
+          
+          // If no session in memory, check database for active sessions
+          if (!recoveredSession) {
+            console.log(`🔍 No sessions in memory, checking database...`);
+            const dbSessions = this.state.storage.sql
+              .exec(`SELECT * FROM gigaml_sessions WHERE status = 'active' ORDER BY created_at DESC LIMIT 1`)
+              .toArray();
+            
+            if (dbSessions.length > 0) {
+              const dbSession = dbSessions[0] as any;
+              recoveredSession = {
+                ticketId: dbSession.ticket_id,
+                userId: dbSession.user_id,
+                status: dbSession.status,
+                createdAt: dbSession.created_at,
+              };
+              recoveredConnectionId = crypto.randomUUID(); // Generate new connection ID
+              console.log(`🔧 Recovered session from database: ${recoveredSession.ticketId}`);
+              
+              // Add session back to memory
+              this.gigamlSessions.set(recoveredConnectionId, recoveredSession);
+            }
+          }
+          
+          if (recoveredSession && recoveredConnectionId) {
+            // Recreate connection data with the recovered session
+            connectionData = { 
+              id: recoveredConnectionId, 
+              gigamlSession: recoveredSession 
+            };
+            this.connections.set(ws, connectionData);
+            console.log(`🔧 Recovered connection data for WebSocket with session: ${recoveredSession.ticketId}`);
+          } else {
+            console.error("❌ No active sessions available for recovery");
+            
+            // Try to recreate a session based on the message context
+            console.log(`🔄 Attempting to recreate session...`);
+            try {
+              const newConnectionId = crypto.randomUUID();
+              const connectionData: { id: string; gigamlSession?: GigaMLSession } = { id: newConnectionId };
+              this.connections.set(ws, connectionData);
+              
+              // Set up new GigaML session asynchronously
+              Promise.resolve().then(async () => {
+                try {
+                  await this.setupGigaMLSessionAsync(ws, newConnectionId);
+                  console.log(`🔧 Emergency session setup completed for ${newConnectionId}`);
+                } catch (error) {
+                  console.error(`❌ Emergency session setup failed:`, error);
+                }
+              });
+              
+              // Send informative message to user
+              const infoMessage: ChatMessage = {
+                id: `info_${Date.now()}`,
+                content: "Reconnecting to AI assistant. Your message will be processed shortly.",
+                user: "system",
+                role: "assistant",
+              };
+              
+              this.saveMessage(infoMessage);
+              this.broadcastMessage({
+                type: "add",
+                ...infoMessage,
+              });
+              
+              // Continue with the current message processing
+              console.log(`🔧 Continuing with new connection setup for message processing`);
+              return; // Skip processing this message for now
+            } catch (emergencyError) {
+              console.error("❌ Emergency recovery failed:", emergencyError);
+              
+              // Send error message to user
+              const errorMessage: ChatMessage = {
+                id: `error_${Date.now()}`,
+                content: "Connection lost. Please refresh the page to continue.",
+                user: "system",
+                role: "assistant",
+              };
+              
+              this.saveMessage(errorMessage);
+              this.broadcastMessage({
+                type: "add",
+                ...errorMessage,
+              });
+              return;
+            }
+          }
+        }
+        
         const session = connectionData?.gigamlSession;
         console.log("GigaML session:", session);
         
@@ -320,6 +494,22 @@ export class Chat implements DurableObject {
               ...errorMessage,
             });
           }
+        } else if (!session) {
+          console.error("❌ No GigaML session found for connection");
+          
+          // Send informative error message
+          const errorMessage: ChatMessage = {
+            id: `error_${Date.now()}`,
+            content: "Setting up AI assistant connection. Please wait a moment and try again.",
+            user: "system", 
+            role: "assistant",
+          };
+          
+          this.saveMessage(errorMessage);
+          this.broadcastMessage({
+            type: "add",
+            ...errorMessage,
+          });
         }
       }
     }
@@ -328,7 +518,7 @@ export class Chat implements DurableObject {
   async handleWebSocketClose(ws: WebSocket): Promise<void> {
     console.log(`🔌❌ WebSocket closing...`);
     const connectionData = this.connections.get(ws);
-    console.log(`🔌❌ Connection data:`, JSON.stringify(connectionData, null, 2));
+    console.log(`🔌❌ Connection data:`, connectionData ? JSON.stringify(connectionData, null, 2) : 'null');
     console.log(`🔌❌ Connections before close: ${this.connections.size}`);
     console.log(`🔌❌ Sessions before close: ${this.gigamlSessions.size}`);
     
@@ -348,14 +538,19 @@ export class Chat implements DurableObject {
       
       // DO NOT call unregisterSessionFromRouter - keep session registered for webhooks
       console.log(`🔌❌ Session registry preserved for webhook routing`);
+    } else if (connectionData?.id) {
+      // Connection existed but had no GigaML session
+      console.log(`🔌❌ Connection ${connectionData.id} closed without GigaML session`);
+    } else {
+      // Connection data was null - this indicates a race condition or early close
+      console.log(`🔌❌ Connection closed with no connection data - likely early disconnect`);
     }
     
-    // Remove the WebSocket connection
-    this.connections.delete(ws);
+    // Always remove the WebSocket connection regardless of connection data state
+    const wasRemoved = this.connections.delete(ws);
+    console.log(`🔌❌ Connection removal successful: ${wasRemoved}`);
     console.log(`🔌❌ Connections after close: ${this.connections.size}`);
     console.log(`🔌❌ Sessions still in memory: ${this.gigamlSessions.size}`);
-    console.log(`🔌❌ Session preserved for reconnection in both memory and database`);
-    console.log(`🔌❌ Session preserved for reconnection in both memory and database`);
   }
 
   private async registerSessionInRouter(ticketId: string, roomId: string): Promise<void> {
@@ -427,52 +622,63 @@ export class Chat implements DurableObject {
       
       // Handle WebSocket upgrades
       if (request.headers.get("upgrade") === "websocket") {
+        console.log(`🔌 WebSocket upgrade request received`);
+        const startTime = Date.now();
+        
         const webSocketPair = new WebSocketPair();
         const [client, server] = Object.values(webSocketPair);
         
         // Extract original room ID from request headers if available
         const originalRoomId = request.headers.get("x-original-room-id");
         
-        // Immediately establish the connection by accepting the WebSocket
-        this.state.acceptWebSocket(server);
-        
-        // Set up the connection and initiate GigaML session asynchronously
-        // But ensure basic connection is established first
+        // Set up the connection with a persistent ID BEFORE accepting
         const connectionId = crypto.randomUUID();
-        console.log(`WebSocket upgrade: establishing connection ${connectionId}`);
+        console.log(`🔌 WebSocket connecting with ID: ${connectionId}, roomId: ${originalRoomId}`);
         
-        // Immediately set up basic connection data
+        // CRITICAL: Set up connection data immediately and ensure it persists
         const connectionData: { id: string; gigamlSession?: GigaMLSession } = { id: connectionId };
         this.connections.set(server, connectionData);
         
-        // Send initial messages immediately
-        try {
-          server.send(JSON.stringify({
-            type: "all",
-            messages: this.messages,
-          } satisfies Message));
-          console.log(`WebSocket upgrade: sent initial messages to ${connectionId}`);
-          
-          // Also send a connection confirmation message
-          server.send(JSON.stringify({
-            type: "connection",
-            status: "connected",
-            connectionId: connectionId,
-          }));
-          
-        } catch (error) {
-          console.error(`WebSocket upgrade: failed to send initial messages to ${connectionId}:`, error);
-        }
+        // Accept the WebSocket AFTER setting up connection data
+        this.state.acceptWebSocket(server);
+        console.log(`🔌 WebSocket accepted for ${connectionId} after ${Date.now() - startTime}ms`);
         
-        // Set up GigaML session asynchronously - don't await to avoid blocking upgrade
-        this.setupGigaMLSessionAsync(server, connectionId, originalRoomId || undefined).catch((error: unknown) => {
-          console.error(`Failed to setup GigaML session for ${connectionId}:`, error);
-        });
-        
-        return new Response(null, {
+        // Return the WebSocket response IMMEDIATELY to prevent browser timeout
+        const response = new Response(null, {
           status: 101,
           webSocket: client,
         });
+        
+        // Do ALL async work AFTER returning the response
+        // This prevents the browser from canceling the connection
+        setTimeout(async () => {
+          try {
+            console.log(`🔌 Starting post-connection setup for ${connectionId}`);
+            
+            // Send initial messages
+            server.send(JSON.stringify({
+              type: "all",
+              messages: this.messages,
+            } satisfies Message));
+            
+            // Send connection confirmation message
+            server.send(JSON.stringify({
+              type: "connection",
+              status: "connected",
+              connectionId: connectionId,
+            }));
+            
+            console.log(`✅ Initial messages sent to ${connectionId}`);
+            
+            // Set up GigaML session last
+            await this.setupGigaMLSessionAsync(server, connectionId, originalRoomId || undefined);
+            console.log(`✅ Complete setup finished for ${connectionId} after ${Date.now() - startTime}ms`);
+          } catch (error) {
+            console.error(`❌ Post-connection setup failed for ${connectionId}:`, error);
+          }
+        }, 0);
+        
+        return response;
       }
       
       if (url.pathname === "/webhook/gigaml" && request.method === "POST") {

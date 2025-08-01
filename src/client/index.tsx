@@ -268,31 +268,25 @@ function App() {
           ) : (
             <div className="space-y-4">
               {safeMessages.map((message, index) => {
-                // Check if this is the last user message
-                const isLastUserMessage =
-                  message.role === "user" &&
-                  index ===
-                    safeMessages
-                      .map((m) => (m.role === "user" ? m : null))
-                      .filter(Boolean).length -
-                      1 +
-                      safeMessages
-                        .slice(0, index + 1)
-                        .filter((m) => m.role === "user").length -
-                      1;
-
-                // Simpler approach: find the last user message index
+                // Find the last user message index (much simpler)
                 const lastUserMessageIndex = safeMessages
-                  .map((m, i) => (m.role === "user" ? i : -1))
-                  .filter((i) => i !== -1)
-                  .pop();
+                  .slice()
+                  .reverse()
+                  .findIndex((m) => m.role === "user");
+                const actualLastUserMessageIndex =
+                  lastUserMessageIndex === -1
+                    ? -1
+                    : safeMessages.length - 1 - lastUserMessageIndex;
 
                 return (
                   <ChatBubble
                     key={message.id}
                     message={message}
                     isOwn={message.user === displayName}
-                    isLastUserMessage={index === lastUserMessageIndex}
+                    isLastUserMessage={
+                      index === actualLastUserMessageIndex &&
+                      message.role === "user"
+                    }
                   />
                 );
               })}
