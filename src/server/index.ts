@@ -91,7 +91,8 @@ export class Chat implements DurableObject {
       throw new Error("GIGAML_API_KEY environment variable is not set");
     }
 
-    console.log(`GigaML API call: ${method} ${endpoint}`, JSON.stringify(body, null, 2));
+    console.log(`GigaML API call: ${method} ${this.GIGAML_BASE_URL}/${endpoint}`);
+    console.log("Request body:", JSON.stringify(body, null, 2));
 
     const response = await fetch(`${this.GIGAML_BASE_URL}/${endpoint}`, {
       method,
@@ -103,7 +104,8 @@ export class Chat implements DurableObject {
     });
 
     const responseText = await response.text();
-    console.log(`GigaML API response: ${response.status} ${response.statusText}`, responseText);
+    console.log(`GigaML API response: ${response.status} ${response.statusText}`);
+    console.log("Response body:", responseText);
 
     if (!response.ok) {
       throw new Error(`GigaML API error: ${response.status} ${response.statusText} - ${responseText}`);
@@ -120,10 +122,10 @@ export class Chat implements DurableObject {
 
   private async initiateGigaMLSession(userId: string, roomId: string, ticketId?: string): Promise<string> {
     const request: GigaMLInitiateSessionRequest = {
-      agent_template_id: this.env?.GIGAML_AGENT_ID || this.AGENT_ID, // Use agent_template_id instead of agentId
-      userId,
-      ticket_id: ticketId || `chat_${roomId}_${Date.now()}`, // Use provided ticket ID or generate one
-      metadata: {
+      agent_template_id: this.env?.GIGAML_AGENT_ID || this.AGENT_ID,
+      ticket_id: ticketId || `chat_${roomId}_${Date.now()}`,
+      initialization_values: {
+        userId,
         roomId,
         platform: "rio-rita-chat",
       },
@@ -135,7 +137,7 @@ export class Chat implements DurableObject {
       request
     );
 
-    // If the response doesn't have a sessionId, generate one based on the ticket_id
+    // If the response doesn't have a sessionId, use the ticket_id as sessionId
     return response.sessionId || request.ticket_id;
   }
 
@@ -307,7 +309,7 @@ export class Chat implements DurableObject {
       
       const routerObject = this.env.Chat.get(routerId);
       
-      const registerRequest = new Request("https://example.com/register-session", {
+      const registerRequest = new Request("https://internal/register-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, roomId }),
@@ -326,7 +328,7 @@ export class Chat implements DurableObject {
       
       const routerObject = this.env.Chat.get(routerId);
       
-      const unregisterRequest = new Request("https://example.com/unregister-session", {
+      const unregisterRequest = new Request("https://internal/unregister-session", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId }),
@@ -413,7 +415,10 @@ export class Chat implements DurableObject {
   // Webhook endpoint to receive messages from GigaML
   async handleGigaMLWebhook(request: Request): Promise<Response> {
     try {
-      console.log("Received GigaML webhook request");
+      console.log("=== GigaML Webhook Received ===");
+      console.log("Request URL:", request.url);
+      console.log("Request method:", request.method);
+      console.log("Request headers:", Object.fromEntries(request.headers.entries()));
       
       // Validate authentication
       const authHeader = request.headers.get("Authorization");
@@ -429,15 +434,17 @@ export class Chat implements DurableObject {
       
       const token = authHeader.replace("Bearer ", "");
       if (token !== expectedApiKey) {
-        console.log("Invalid API key");
+        console.log("Invalid API key - expected:", expectedApiKey.substring(0, 10) + "...");
+        console.log("Invalid API key - received:", token.substring(0, 10) + "...");
         return new Response("Unauthorized", { status: 401 });
       }
       
       const body = await request.json() as any;
-      console.log("Webhook body:", JSON.stringify(body, null, 2));
+      console.log("=== Webhook Body ===");
+      console.log(JSON.stringify(body, null, 2));
       
       if (!body.sessionId || !body.message) {
-        console.log("Invalid payload structure");
+        console.log("Invalid payload structure - missing sessionId or message");
         return new Response("Invalid webhook payload", { status: 400 });
       }
       
@@ -543,40 +550,52 @@ export class Chat implements DurableObject {
   // Global webhook router
   async routeGigaMLWebhook(request: Request): Promise<Response> {
     try {
+      console.log("=== Webhook Router: Processing request ===");
+      console.log("Router object ID:", this.state.id.name);
+      
       const body = await request.json() as any;
+      console.log("=== Webhook Router: Body received ===");
+      console.log(JSON.stringify(body, null, 2));
       
       if (!body.sessionId) {
+        console.log("=== Webhook Router: No sessionId found ===");
         return new Response("Invalid webhook payload", { status: 400 });
       }
       
       const routerName = this.state.id.name;
       if (routerName !== "webhook-router") {
+        console.log("=== Webhook Router: Invalid router name ===", routerName);
         return new Response("Invalid router", { status: 400 });
       }
       
+      console.log("=== Webhook Router: Looking up session ===", body.sessionId);
       const sessionRegistry = this.state.storage.sql
         .exec(`SELECT room_id FROM session_registry WHERE session_id = ? LIMIT 1`, body.sessionId)
         .toArray();
       
+      console.log("=== Webhook Router: Session registry result ===", sessionRegistry);
+      
       if (sessionRegistry.length === 0) {
-        console.log(`No session found in registry for ${body.sessionId}`);
+        console.log(`=== Webhook Router: No session found in registry for ${body.sessionId} ===`);
         return new Response("Session not found", { status: 404 });
       }
       
       const roomId = (sessionRegistry[0] as any).room_id;
+      console.log("=== Webhook Router: Found room ID ===", roomId);
       
       const chatId = this.env?.Chat?.idFromString?.(roomId);
       if (!chatId) {
-        console.error(`Failed to create chat ID from room ID: ${roomId}`);
+        console.error(`=== Webhook Router: Failed to create chat ID from room ID: ${roomId} ===`);
         return new Response("Invalid room", { status: 400 });
       }
       
       const chatObject = this.env?.Chat?.get?.(chatId);
       if (!chatObject) {
+        console.log("=== Webhook Router: Chat object not available ===");
         return new Response("Room not available", { status: 500 });
       }
       
-      const targetRequest = new Request(`https://example.com/webhook/gigaml`, {
+      const targetRequest = new Request(`https://internal/webhook/gigaml`, {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
@@ -588,8 +607,10 @@ export class Chat implements DurableObject {
         body: JSON.stringify(body),
       });
       
-      console.log(`Routing webhook for session ${body.sessionId} to room ${roomId}`);
-      return await chatObject.fetch(targetRequest);
+      console.log(`=== Webhook Router: Routing webhook for session ${body.sessionId} to room ${roomId} ===`);
+      const response = await chatObject.fetch(targetRequest);
+      console.log("=== Webhook Router: Final response status ===", response.status);
+      return response;
     } catch (error) {
       console.error("Error in webhook router:", error);
       return new Response("Router error", { status: 500 });
@@ -628,11 +649,18 @@ export default {
       // Handle GigaML webhook
       if (url.pathname === "/webhook/gigaml" && request.method === "POST") {
         try {
+          console.log("=== Main Worker: GigaML webhook received ===");
+          console.log("URL:", request.url);
+          console.log("Headers:", Object.fromEntries(request.headers.entries()));
+          
           // Clone the request to preserve the original body
           const clonedRequest = request.clone();
           const body = await clonedRequest.json() as any;
+          console.log("=== Main Worker: Webhook body ===");
+          console.log(JSON.stringify(body, null, 2));
           
           if (!body.sessionId) {
+            console.log("=== Main Worker: Missing sessionId in body ===");
             return new Response("Invalid webhook payload", { status: 400 });
           }
           
@@ -651,7 +679,10 @@ export default {
             body: JSON.stringify(body),
           });
           
-          return await routerObject.fetch(routerRequest);
+          console.log("=== Main Worker: Routing to webhook router ===");
+          const response = await routerObject.fetch(routerRequest);
+          console.log("=== Main Worker: Router response status ===", response.status);
+          return response;
         } catch (error) {
           console.error("Error routing GigaML webhook:", error);
           return new Response("Internal server error", { status: 500 });

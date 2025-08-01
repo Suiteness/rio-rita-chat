@@ -34,11 +34,9 @@ export type GigaMLSession = {
 };
 
 export type GigaMLInitiateSessionRequest = {
-  agent_id?: string;
-  agent_template_id?: string;
-  userId: string;
+  agent_template_id: string;
   ticket_id: string;
-  metadata?: Record<string, any>;
+  initialization_values?: Record<string, any>;
 };
 
 export type GigaMLInitiateSessionResponse = {
