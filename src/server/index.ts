@@ -79,7 +79,9 @@ export class Chat extends Server<Env> {
     try {
       console.log(`🤖 Initiating GigaML session`);
       
-      const ticketId = crypto.randomUUID(); // Generate unique ticket ID
+      // Use the room ID as the ticket ID for easy mapping
+      const roomId = this.ctx.id.toString();
+      const ticketId = roomId;
       
       const response = await fetch("https://agents.gigaml.com/webhook/initiate-session", {
         method: "POST",
@@ -114,6 +116,7 @@ export class Chat extends Server<Env> {
       this.gigamlSessionId = data.session_id || ticketId; // Use our ticket ID as session ID
       
       console.log(`✅ GigaML session initiated with ticket ID: ${this.gigamlSessionId}`);
+      console.log(`🔗 Room ID: ${roomId} mapped to ticket ID: ${ticketId}`);
     } catch (error) {
       console.error("❌ Error initiating GigaML session:", error);
       
@@ -232,12 +235,13 @@ export default {
     const url = new URL(request.url);
     
     // Handle GigaML webhook
-    if (url.pathname === "/api/gigaml/message" && request.method === "POST") {
+    if (url.pathname === "/webhook/gigaml" && request.method === "POST") {
       try {
         const data = await request.json() as any;
         const { ticket_id, message_id, message } = data;
         
         console.log(`🤖 Received GigaML webhook for ticket: ${ticket_id}`);
+        console.log(`📋 Webhook data:`, JSON.stringify(data, null, 2));
         
         // Extract message content from GigaML format
         let messageContent = "";
@@ -256,11 +260,13 @@ export default {
         
         if (!messageContent) {
           console.error("❌ No valid message content found in GigaML webhook");
+          console.log(`📋 Full message object:`, JSON.stringify(message, null, 2));
           return new Response("No content", { status: 400 });
         }
         
         // Find the Durable Object for this session/room
         const roomId = ticket_id || "default-room";
+        console.log(`🔍 Looking for room with ID: ${roomId}`);
         const id = env.Chat.idFromName(roomId);
         const chatObject = env.Chat.get(id);
         
