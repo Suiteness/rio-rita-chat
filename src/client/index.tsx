@@ -9,8 +9,54 @@ import {
   useParams,
 } from "react-router";
 import { nanoid } from "nanoid";
+import ReactMarkdown from "react-markdown";
 
 import { type ChatMessage, type Message } from "../shared";
+
+// Message content renderer that handles markdown formatting
+function MessageContent({ content, isAI }: { content: string; isAI: boolean }) {
+  return (
+    <div className={`text-sm font-normal py-2.5 ${isAI ? 'text-gray-900 dark:text-white' : 'text-white'}`}>
+      <ReactMarkdown
+        components={{
+          // Make links clickable and styled
+          a: ({ node, ...props }) => (
+            <a
+              {...props}
+              className={`underline hover:no-underline ${
+                isAI 
+                  ? 'text-blue-600 dark:text-blue-400' 
+                  : 'text-blue-200 hover:text-white'
+              }`}
+              target="_blank"
+              rel="noopener noreferrer"
+            />
+          ),
+          // Style bold text
+          strong: ({ node, ...props }) => (
+            <strong {...props} className="font-semibold" />
+          ),
+          // Style lists
+          ul: ({ node, ...props }) => (
+            <ul {...props} className="list-disc list-inside ml-2 mt-1" />
+          ),
+          ol: ({ node, ...props }) => (
+            <ol {...props} className="list-decimal list-inside ml-2 mt-1" />
+          ),
+          li: ({ node, ...props }) => (
+            <li {...props} className="mb-1" />
+          ),
+          // Preserve line breaks
+          p: ({ node, ...props }) => (
+            <p {...props} className="mb-2 last:mb-0" />
+          ),
+        }}
+      >
+        {content}
+      </ReactMarkdown>
+    </div>
+  );
+}
 
 // Avatar component for users
 function Avatar({ user, role }: { user: string; role: "user" | "assistant" }) {
@@ -52,7 +98,7 @@ function ChatBubble({
           className="flex flex-col w-full max-w-[320px] leading-1.5 p-4 border-gray-200 bg-blue-500 rounded-s-xl rounded-ee-xl md:bg-blue-500/95 md:backdrop-blur-sm"
           title={timestamp}
         >
-          <p className="text-sm font-normal text-white">{message.content}</p>
+          <MessageContent content={message.content} isAI={false} />
           {isLastUserMessage && (
             <span className="text-xs font-normal text-blue-100 mt-1">
               Delivered
@@ -82,9 +128,7 @@ function ChatBubble({
             </span>
           </div>
         )}
-        <p className="text-sm font-normal py-2.5 text-gray-900 dark:text-white">
-          {message.content}
-        </p>
+        <MessageContent content={message.content} isAI={true} />
       </div>
     </div>
   );
@@ -105,6 +149,16 @@ function App() {
   const socket = usePartySocket({
     party: "chat",
     room,
+    onOpen: () => {
+      // Send room name to server when connection opens
+      if (room) {
+        console.log(`🏷️ Sending room name to server: ${room}`);
+        socket.send(JSON.stringify({
+          type: "setRoom",
+          roomName: room,
+        }));
+      }
+    },
     onMessage: (evt) => {
       try {
         const message = JSON.parse(evt.data as string) as Message;

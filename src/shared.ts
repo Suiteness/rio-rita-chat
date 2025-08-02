@@ -25,6 +25,10 @@ export type Message =
       messages: ChatMessage[];
     }
   | {
+      type: "setRoom";
+      roomName: string;
+    }
+  | {
       type: "connection";
       status: string;
       connectionId: string;

@@ -18,6 +18,11 @@ export class Chat extends Server<Env> {
     
     // Handle internal GigaML message forwarding
     if (url.pathname === "/gigaml-message" && request.method === "POST") {
+      // Ensure database is initialized for this Durable Object
+      this.ctx.storage.sql.exec(
+        `CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, user TEXT, role TEXT, content TEXT)`,
+      );
+      
       const message = await request.json() as Message;
       this.saveMessage(message as ChatMessage);
       this.broadcastMessage(message);
@@ -41,6 +46,13 @@ export class Chat extends Server<Env> {
     this.messages = this.ctx.storage.sql
       .exec(`SELECT * FROM messages`)
       .toArray() as ChatMessage[];
+      
+    // Log what we have access to in PartyKit
+    console.log(`🏷️ Available room info:`, {
+      ctxId: this.ctx.id.toString(),
+      ctxName: this.ctx.id.name,
+      serverProps: Object.keys(this)
+    });
   }
 
   onConnect(connection: Connection) {
@@ -53,10 +65,20 @@ export class Chat extends Server<Env> {
         messages: this.messages,
       } satisfies Message),
     );
+  }
 
-    // If this is a new chat room (no messages), initiate GigaML session
-    if (this.messages.length === 0) {
-      this.initiateGigaMLSession();
+  // New method to set the room name from the client
+  setRoomName(roomName: string) {
+    if (!this.gigamlSessionId) {
+      this.gigamlSessionId = roomName;
+      console.log(`🏷️ Set ticket ID to: ${this.gigamlSessionId}`);
+      
+      // Now that we have the room name, initiate GigaML session if this is a new room
+      if (this.messages.length === 0) {
+        this.initiateGigaMLSession().catch(error => {
+          console.error("❌ Background GigaML session initiation failed:", error);
+        });
+      }
     }
   }
 
@@ -79,9 +101,8 @@ export class Chat extends Server<Env> {
     try {
       console.log(`🤖 Initiating GigaML session`);
       
-      // Use the room ID as the ticket ID for easy mapping
-      const roomId = this.ctx.id.toString();
-      const ticketId = roomId;
+      // Use the room name, fallback to Durable Object ID
+      const ticketId = this.gigamlSessionId || this.ctx.id.toString();
       
       const response = await fetch("https://agents.gigaml.com/webhook/initiate-session", {
         method: "POST",
@@ -90,7 +111,7 @@ export class Chat extends Server<Env> {
           "Authorization": `Bearer ${this.env.GIGAML_API_KEY}`,
         },
         body: JSON.stringify({
-          ticket_id: ticketId,
+          ticket_id: ticketId, // Send room name as ticket ID
           agent_template_id: this.env.GIGAML_AGENT_ID,
           initialization_values: {
             room_type: "hotel_chat",
@@ -113,10 +134,28 @@ export class Chat extends Server<Env> {
         data = { session_id: ticketId }; // Use our ticket ID if no JSON
       }
       
-      this.gigamlSessionId = data.session_id || ticketId; // Use our ticket ID as session ID
+      // Don't override gigamlSessionId if it's already set with the room name
+      if (!this.gigamlSessionId) {
+        this.gigamlSessionId = ticketId;
+      }
       
-      console.log(`✅ GigaML session initiated with ticket ID: ${this.gigamlSessionId}`);
-      console.log(`🔗 Room ID: ${roomId} mapped to ticket ID: ${ticketId}`);
+      console.log(`✅ GigaML session initiated with ticket ID: ${ticketId}`);
+      console.log(`🔗 Using room name: ${this.gigamlSessionId} as ticket ID`);
+      
+      // Send a welcome message immediately so the user sees something
+      const welcomeMessage: ChatMessage = {
+        id: crypto.randomUUID(),
+        user: "assistant",
+        role: "assistant",
+        content: "Hi! I'm Rita, your AI assistant. How can I help you today?",
+      };
+
+      this.saveMessage(welcomeMessage);
+      this.broadcastMessage({
+        type: "add",
+        ...welcomeMessage,
+      });
+      
     } catch (error) {
       console.error("❌ Error initiating GigaML session:", error);
       
@@ -199,6 +238,19 @@ export class Chat extends Server<Env> {
     try {
       const parsed = JSON.parse(message as string) as Message;
       
+      console.log(`📨 Processing message:`, {
+        type: parsed.type,
+        user: 'user' in parsed ? parsed.user : 'N/A',
+        role: 'role' in parsed ? parsed.role : 'N/A',
+        gigamlSessionId: this.gigamlSessionId
+      });
+      
+      // Handle room name setup message
+      if (parsed.type === "setRoom") {
+        this.setRoomName(parsed.roomName);
+        return;
+      }
+      
       if (parsed.type === "add" || parsed.type === "update") {
         console.log(`💬 Received message from ${parsed.user}: ${parsed.content}`);
         
@@ -209,8 +261,34 @@ export class Chat extends Server<Env> {
         this.broadcast(message);
 
         // If this is a user message (not from assistant), get AI response
-        if (parsed.role === "user" && this.gigamlSessionId) {
-          this.sendToGigaML(parsed.content as string, this.gigamlSessionId);
+        if (parsed.role === "user") {
+          // If we don't have a session ID, try to use the room name from the Durable Object
+          if (!this.gigamlSessionId) {
+            const roomName = this.ctx.id.name;
+            if (roomName) {
+              console.log(`🔄 No session ID found, using room name: ${roomName}`);
+              this.gigamlSessionId = roomName;
+              
+              // If this is a new room, initiate the session
+              if (this.messages.length === 1) { // Only the user message we just added
+                this.initiateGigaMLSession().catch(error => {
+                  console.error("❌ Background GigaML session initiation failed:", error);
+                });
+              }
+            }
+          }
+          
+          if (this.gigamlSessionId) {
+            console.log(`🚀 Triggering GigaML call for user message`);
+            this.sendToGigaML(parsed.content as string, this.gigamlSessionId);
+          } else {
+            console.log(`❌ No session ID available for GigaML call`);
+          }
+        } else {
+          console.log(`⏭️ Skipping GigaML call:`, {
+            role: parsed.role,
+            hasSessionId: !!this.gigamlSessionId
+          });
         }
       } else {
         // For other message types, just broadcast
